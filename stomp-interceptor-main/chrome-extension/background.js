@@ -4,6 +4,9 @@ import { createSession, stopSession, saveFrame, getSessionFrames } from './db.js
 // Map tabId -> { sessionId, tabUrl, tabTitle }
 const activeRecordings = new Map();
 
+// Tracks whether a session replay is currently in progress //*
+let isReplayInProgress = false; //*
+
 // Listen to Chrome Debugger Events
 chrome.debugger.onEvent.addListener(async (source, method, params) => {
   const tabId = source.tabId;
@@ -113,17 +116,27 @@ async function handleMessage(message, sender) {
       };
     }
 
+    case 'GET_REPLAY_STATUS': { //*
+      return { success: true, isReplayInProgress }; //*
+    } //*
+
     case 'REPLAY_SESSION': {
       const { tabId, sessionId, mode, delayMs = 500 } = message;
       if (!tabId || !sessionId) throw new Error('Tab ID and Session ID are required for replay');
+
+      if (isReplayInProgress) { //*
+        return { success: false, error: 'A replay is already in progress. Please wait for it to finish.' }; //*
+      } //*
 
       const frames = await getSessionFrames(sessionId);
       if (!frames || frames.length === 0) {
         throw new Error('No recorded frames found in this session');
       }
 
+      isReplayInProgress = true; //*
       // Execute Replay Sequence (fire-and-forget, progress is reported via messages)
-      executeReplaySequence(tabId, frames, mode, delayMs);
+      executeReplaySequence(tabId, frames, mode, delayMs)
+        .finally(() => { isReplayInProgress = false; }); //*
       return { success: true, frameCount: frames.length };
     }
 
@@ -132,7 +145,8 @@ async function handleMessage(message, sender) {
       if (!tabId || !frame) throw new Error('Tab ID and frame object are required for replay');
 
       const mode = message.mode || (frame.direction === 'RECEIVED' ? 'SERVER_MOCK' : 'CLIENT');
-      const result = await executeReplaySequence(tabId, [frame], mode, 0);
+      // Bypass mode filter for single frame replay — user explicitly chose this frame
+      const result = await executeReplaySequence(tabId, [frame], mode, 0, true); //*
       return { success: true, ...result };
     }
 
@@ -150,14 +164,23 @@ async function handleMessage(message, sender) {
  *   REPLAY_FRAME_STATUS  — after each frame is replayed
  *   REPLAY_COMPLETE      — when the entire sequence finishes
  */
-async function executeReplaySequence(tabId, frames, mode, delayMs) {
+async function executeReplaySequence(tabId, frames, mode, delayMs, bypassFilter = false) { //*
 
-  // Filter frames relevant to the chosen mode
-  const replayableFrames = frames.filter(f => {
+  // Unified clean log for the engineer testing the tank system
+  if (bypassFilter && frames.length === 1) { //*
+    const f = frames[0]; //*
+    console.log(`[STOMP Interceptor Replay] Replaying single frame (Command: ${f.stompCommand}, Direction: ${f.direction}, Mode: ${mode})`); //* //*
+  } else { //*
+    console.log(`[STOMP Interceptor Replay] Replaying session: ${frames.length} frames (Mode: ${mode})`); //* //*
+  } //*
+
+  // Filter frames relevant to the chosen mode.
+  // bypassFilter=true is used for single-frame replay (user explicitly selected the frame) //*
+  const replayableFrames = bypassFilter ? frames : frames.filter(f => { //*
     if (mode === 'SERVER_MOCK') return f.direction === 'RECEIVED' && f.stompCommand !== 'CONNECTED';
     if (mode === 'CLIENT') return f.direction === 'SENT' && f.stompCommand === 'SEND';
     return false;
-  });
+  }); //*
 
   if (replayableFrames.length === 0) {
     broadcastMessage({
@@ -268,10 +291,19 @@ async function executeReplaySequence(tabId, frames, mode, delayMs) {
         }
       });
 
-      // Delay between replayed frames (skip delay after last frame)
-      if (delayMs > 0 && i < replayableFrames.length - 1) {
-        await new Promise(resolve => setTimeout(resolve, delayMs));
-      }
+      // Real-time delay: wait exactly as long as the original recording did between frames //*
+      if (i < replayableFrames.length - 1) { //*
+        const currentTimestamp = replayableFrames[i].timestamp; //*
+        const nextTimestamp = replayableFrames[i + 1].timestamp; //*
+        const timestampDelta = nextTimestamp - currentTimestamp; //*
+        // Use timestamp delta if valid, otherwise fall back to delayMs //*
+
+        //const waitMs = (timestampDelta > 0 && timestampDelta < 60000) ? timestampDelta : delayMs; //*
+        // bunu kullanmak sitersen aşağıyı waitMS ile değiştir deltayı.
+        if (timestampDelta > 0) { //*
+          await new Promise(resolve => setTimeout(resolve, timestampDelta)); //*
+        } //*
+      } //*
     }
 
     // Broadcast completion

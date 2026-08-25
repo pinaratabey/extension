@@ -23,7 +23,7 @@ public class HeartbeatPublisher {
         this.messagingTemplate = messagingTemplate;
     }
 
-    @Scheduled(fixedRate = 12000)
+    @Scheduled(fixedRate = 30000)
     public void publishStatus() {
         int count = tickCount.incrementAndGet();
         long uptime = (System.currentTimeMillis() - startTime) / 1000;
