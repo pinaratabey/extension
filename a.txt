@@ -1,0 +1,74 @@
+case 'REPLAY_SINGLE_FRAME': {
+      const { tabId, frame } = message;
+      if (!tabId || !frame) throw new Error('Tab ID and frame object are required for replay');
+
+      const mode = message.mode || (frame.direction === 'RECEIVED' ? 'SERVER_MOCK' : 'CLIENT');
+      console.log(`[STOMP Interceptor] REPLAY_SINGLE_FRAME → mode=${mode} cmd=${frame.stompCommand} dir=${frame.direction}`); //*
+      // Bypass mode filter for single frame replay — user explicitly chose this frame //*
+      const result = await executeReplaySequence(tabId, [frame], mode, 0, true); //*
+      return { success: true, ...result };
+    }
+
+//SADECE SENT VE SEND OLMASI İÇİN
+const replayableFrames = frames.filter(f => {
+    if (mode === 'SERVER_MOCK') return f.direction === 'RECEIVED' && f.stompCommand !== 'CONNECTED';
+    //if (mode === 'CLIENT') return f.direction === 'SENT';
+    if (mode === 'CLIENT') return f.direction === 'SENT' && f.stompCommand === 'SEND';
+    return false;
+  });
+
+155-175 arsı
+async function executeReplaySequence(tabId, frames, mode, delayMs, bypassFilter = false) { //*
+
+  // Unified clean log for the engineer testing the tank system
+  if (bypassFilter && frames.length === 1) { //*
+    const f = frames[0]; //*
+    console.log(`[STOMP Interceptor Replay] Replaying single frame (Command: ${f.stompCommand}, Direction: ${f.direction}, Mode: ${mode})`); //* //*
+  } else { //*
+    console.log(`[STOMP Interceptor Replay] Replaying session: ${frames.length} frames (Mode: ${mode})`); //* //*
+  } //*
+
+  // Filter frames relevant to the chosen mode.
+  // bypassFilter=true is used for single-frame replay (user explicitly selected the frame) //*
+  const replayableFrames = bypassFilter ? frames : frames.filter(f => { //*
+    if (mode === 'SERVER_MOCK') return f.direction === 'RECEIVED' && f.stompCommand !== 'CONNECTED';
+    if (mode === 'CLIENT') return f.direction === 'SENT' && f.stompCommand === 'SEND';
+    return false;
+  }); //*  // Filter frames relevant to the chosen mode.
+  // bypassFilter=true is used for single-frame replay (user explicitly selected the frame) //*
+  const replayableFrames = bypassFilter ? frames : frames.filter(f => { //*
+    if (mode === 'SERVER_MOCK') return f.direction === 'RECEIVED' && f.stompCommand !== 'CONNECTED';
+    if (mode === 'CLIENT') return f.direction === 'SENT' && f.stompCommand === 'SEND';
+    return false;
+  }); //*
+
+
+281-291
+
+// Real-time delay: wait exactly as long as the original recording did between frames //*
+      if (i < replayableFrames.length - 1) { //*
+        const currentTimestamp = replayableFrames[i].timestamp; //*
+        const nextTimestamp = replayableFrames[i + 1].timestamp; //*
+        const timestampDelta = nextTimestamp - currentTimestamp; //*
+        // Use timestamp delta if valid, otherwise fall back to delayMs //*
+        const waitMs = (timestampDelta > 0 && timestampDelta < 60000) ? timestampDelta : delayMs; //*
+        if (waitMs > 0) { //*
+          await new Promise(resolve => setTimeout(resolve, waitMs)); //*
+        } //*
+      } //*
+
+
+
+popup.js değişti
+
+ayrıca ekle 27-34:
+// Check if a replay is already running (persists even if popup was closed) //*
+  const replayStatus = await chrome.runtime.sendMessage({ type: 'GET_REPLAY_STATUS' }); //*
+  if (replayStatus && replayStatus.isReplayInProgress) { //*
+    btnReplay.disabled = true; //*
+    btnReplay.textContent = 'Replaying...'; //*
+  } //*
+
+
+
+119-140 arası background.cs 
