@@ -23,7 +23,7 @@ chrome.debugger.onEvent.addListener(async (source, method, params) => {
 
     for (const frame of stompFrames) {
       await saveFrame(sessionId, direction, frame);
-      
+
       // Notify extension popups/dashboards of live intercepted frame
       chrome.runtime.sendMessage({
         type: 'STOMP_FRAME_INTERCEPTED',
@@ -45,12 +45,12 @@ chrome.debugger.onDetach.addListener(async (source, reason) => {
     const recording = activeRecordings.get(tabId);
     await stopSession(recording.sessionId);
     activeRecordings.delete(tabId);
-    
+
     chrome.runtime.sendMessage({
       type: 'RECORDING_STOPPED',
       tabId,
       reason: `Debugger detached: ${reason}`
-    }).catch(() => {});
+    }).catch(() => { });
   }
 });
 
@@ -128,11 +128,12 @@ async function handleMessage(message, sender) {
     }
 
     case 'REPLAY_SINGLE_FRAME': {
-      const { tabId, frame, mode = 'CLIENT' } = message;
+      const { tabId, frame } = message;
       if (!tabId || !frame) throw new Error('Tab ID and frame object are required for replay');
 
-      await executeReplaySequence(tabId, [frame], mode, 0);
-      return { success: true };
+      const mode = message.mode || (frame.direction === 'RECEIVED' ? 'SERVER_MOCK' : 'CLIENT');
+      const result = await executeReplaySequence(tabId, [frame], mode, 0);
+      return { success: true, ...result };
     }
 
     default:
@@ -153,8 +154,8 @@ async function executeReplaySequence(tabId, frames, mode, delayMs) {
 
   // Filter frames relevant to the chosen mode
   const replayableFrames = frames.filter(f => {
-    if (mode === 'SERVER_MOCK') return f.direction === 'RECEIVED';
-    if (mode === 'CLIENT') return f.direction === 'SENT';
+    if (mode === 'SERVER_MOCK') return f.direction === 'RECEIVED' && f.stompCommand !== 'CONNECTED';
+    if (mode === 'CLIENT') return f.direction === 'SENT' && f.stompCommand === 'SEND';
     return false;
   });
 
@@ -188,6 +189,7 @@ async function executeReplaySequence(tabId, frames, mode, delayMs) {
         try {
           await chrome.scripting.executeScript({
             target: { tabId },
+            world: 'MAIN',
             func: (rawPayload) => {
               // Diagnostic: check each step
               if (!window.client) {
@@ -224,6 +226,7 @@ async function executeReplaySequence(tabId, frames, mode, delayMs) {
         try {
           await chrome.scripting.executeScript({
             target: { tabId },
+            world: 'MAIN',
             func: (destination, headersJson, payloadStr) => {
               if (window.client && window.client.send) {
                 const headers = JSON.parse(headersJson);
