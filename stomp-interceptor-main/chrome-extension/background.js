@@ -7,6 +7,10 @@ const activeRecordings = new Map();
 // Tracks whether a session replay is currently in progress //*
 let isReplayInProgress = false; //*
 
+// Tracks currently active STOMP subscriptions per tab, derived from intercepted WS frames //*
+// Map<tabId, Map<destination, subId>> //*
+const activeTabSubscriptions = new Map(); //*
+
 // Listen to Chrome Debugger Events
 chrome.debugger.onEvent.addListener(async (source, method, params) => {
   const tabId = source.tabId;
@@ -26,6 +30,19 @@ chrome.debugger.onEvent.addListener(async (source, method, params) => {
 
     for (const frame of stompFrames) {
       await saveFrame(sessionId, direction, frame);
+
+      // Track SUBSCRIBE / UNSUBSCRIBE state from intercepted WS traffic //*
+      // This is the ground-truth source for bootstrap — independent of window.client internals //*
+      if (direction === 'SENT') { //*
+        if (!activeTabSubscriptions.has(tabId)) activeTabSubscriptions.set(tabId, new Map()); //*
+        const tabSubs = activeTabSubscriptions.get(tabId); //*
+        if (frame.command === 'SUBSCRIBE' && frame.destination) { //*
+          const subId = frame.headers?.id || frame.headers?.['id'] || `sub-tracked-${Date.now()}`; //*
+          tabSubs.set(frame.destination, subId); //*
+        } else if (frame.command === 'UNSUBSCRIBE' && frame.destination) { //*
+          tabSubs.delete(frame.destination); //*
+        } //*
+      } //*
 
       // Notify extension popups/dashboards of live intercepted frame
       chrome.runtime.sendMessage({
@@ -178,7 +195,7 @@ async function executeReplaySequence(tabId, frames, mode, delayMs, bypassFilter 
   // bypassFilter=true is used for single-frame replay (user explicitly selected the frame) //*
   const replayableFrames = bypassFilter ? frames : frames.filter(f => { //*
     if (mode === 'SERVER_MOCK') return f.direction === 'RECEIVED' && f.stompCommand !== 'CONNECTED';
-    if (mode === 'CLIENT') return f.direction === 'SENT' && f.stompCommand === 'SEND';
+    if (mode === 'CLIENT') return f.direction === 'SENT' && ['SEND', 'SUBSCRIBE', 'UNSUBSCRIBE', 'CONNECT'].includes(f.stompCommand);
     return false;
   }); //*
 
@@ -197,8 +214,30 @@ async function executeReplaySequence(tabId, frames, mode, delayMs, bypassFilter 
 
   try {
 
+    // CLIENT mode: bootstrap __stompReplaySubs from background's activeTabSubscriptions map. //*
+    // This is the ground-truth source — built from intercepted WebSocket SUBSCRIBE/UNSUBSCRIBE //*
+    // frames, so it works regardless of how window.client stores subscriptions internally. //*
+    if (mode === 'CLIENT') { //*
+      const knownSubs = activeTabSubscriptions.get(tabId) || new Map(); //*
+      const knownSubsObj = Object.fromEntries(knownSubs); //*
+      console.log('[STOMP Interceptor Replay] Bootstrap: injecting', knownSubs.size, 'known subscription(s) from WS intercept:', knownSubsObj); //*
+      await chrome.scripting.executeScript({ //*
+        target: { tabId }, //*
+        world: 'MAIN', //*
+        func: (subsObj) => { //*
+          // Seed __stompReplaySubs with ground-truth data from background //*
+          window.__stompReplaySubs = subsObj; //*
+          console.log('[STOMP Interceptor Replay] Bootstrap complete. Tracked subs:', JSON.stringify(window.__stompReplaySubs)); //*
+        }, //*
+        args: [knownSubsObj] //*
+      }).catch((err) => { //*
+        console.warn('[STOMP Interceptor Replay] Bootstrap inject failed:', err); //*
+      }); //*
+    } //*
+
     let replayedCount = 0;
     let errorCount = 0;
+
 
     for (let i = 0; i < replayableFrames.length; i++) {
       const frame = replayableFrames[i];
@@ -250,18 +289,45 @@ async function executeReplaySequence(tabId, frames, mode, delayMs, bypassFilter 
           await chrome.scripting.executeScript({
             target: { tabId },
             world: 'MAIN',
-            func: (destination, headersJson, payloadStr) => {
-              if (window.client && window.client.send) {
-                const headers = JSON.parse(headersJson);
-                window.client.send(destination, headers, payloadStr);
-                console.log('[STOMP Interceptor Replay] Sent client frame to', destination);
-                return true;
-              } else {
-                console.warn('[STOMP Interceptor Replay] window.client not found on target page. Is the STOMP connection active?');
+            func: (command, destination, headersJson, payloadStr) => {
+              if (!window.client) {
+                console.warn('[STOMP Interceptor Replay] window.client bulunamadı. Bağlantı aktif mi?');
                 return false;
               }
+              const headers = JSON.parse(headersJson);
+
+              // Replay subscription state tracker //*
+              if (!window.__stompReplaySubs) window.__stompReplaySubs = {}; //*
+
+              if (command === 'SEND') {
+                window.client.send(destination, headers, payloadStr);
+              } else if (command === 'SUBSCRIBE') {
+                if (window.__stompReplaySubs[destination]) {
+                  // Already subscribed to this destination - skip //*
+                  console.log('[STOMP Interceptor Replay] SUBSCRIBE skipped (already subscribed):', destination); //*
+                  return 'SKIPPED'; //*
+                }
+                const sub = window.client.subscribe(destination, () => { }); //*
+                // Use sub.id if available; fall back to destination as a truthy sentinel //*
+                // (some custom STOMP clients return undefined id) //*
+                window.__stompReplaySubs[destination] = sub?.id || destination; //*
+                console.log('[STOMP Interceptor Replay] SUBSCRIBE completed:', destination, '→ id:', sub?.id ?? '(no id, using destination as key)'); //*
+              } else if (command === 'UNSUBSCRIBE') {
+                if (!window.__stompReplaySubs || !window.__stompReplaySubs[destination]) {
+                  // Not subscribed to this destination - skip //*
+                  console.log('[STOMP Interceptor Replay] UNSUBSCRIBE skipped (not subscribed):', destination); //*
+                  return 'SKIPPED'; //*
+                }
+                window.client.unsubscribe(window.__stompReplaySubs[destination]); //*
+                console.log('[STOMP Interceptor Replay] UNSUBSCRIBE completed:', destination, '→ id:', window.__stompReplaySubs[destination]); //*
+                delete window.__stompReplaySubs[destination]; //*
+              } else if (command === 'CONNECT') {
+                console.log('[STOMP Interceptor Replay] CONNECT frame skipped (already connected).');
+              }
+              return true;
             },
             args: [
+              frame.stompCommand,
               frame.destination,
               JSON.stringify(frame.headers || {}),
               frame.body || ''
