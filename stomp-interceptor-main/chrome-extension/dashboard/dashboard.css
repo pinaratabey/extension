@@ -246,3 +246,25 @@ tr.selected {
   color: var(--text-main);
   border: 1px solid var(--border);
 }
+
+/* Frame selection checkboxes */
+.frame-checkbox {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--accent-cyan);
+  cursor: pointer;
+  vertical-align: middle;
+}
+
+#selectAllFrames {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--accent-cyan);
+  cursor: pointer;
+  vertical-align: middle;
+}
+
+.btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}

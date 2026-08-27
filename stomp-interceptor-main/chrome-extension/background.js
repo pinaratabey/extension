@@ -4,12 +4,12 @@ import { createSession, stopSession, saveFrame, getSessionFrames } from './db.js
 // Map tabId -> { sessionId, tabUrl, tabTitle }
 const activeRecordings = new Map();
 
-// Tracks whether a session replay is currently in progress //*
-let isReplayInProgress = false; //*
+// Tracks whether a session replay is currently in progress
+let isReplayInProgress = false;
 
-// Tracks currently active STOMP subscriptions per tab, derived from intercepted WS frames //*
-// Map<tabId, Map<destination, subId>> //*
-const activeTabSubscriptions = new Map(); //*
+// Tracks currently active STOMP subscriptions per tab, derived from intercepted WS frames
+// Map<tabId, Map<destination, subId>>
+const activeTabSubscriptions = new Map();
 
 // Listen to Chrome Debugger Events
 chrome.debugger.onEvent.addListener(async (source, method, params) => {
@@ -31,18 +31,18 @@ chrome.debugger.onEvent.addListener(async (source, method, params) => {
     for (const frame of stompFrames) {
       await saveFrame(sessionId, direction, frame);
 
-      // Track SUBSCRIBE / UNSUBSCRIBE state from intercepted WS traffic //*
-      // This is the ground-truth source for bootstrap — independent of window.client internals //*
-      if (direction === 'SENT') { //*
-        if (!activeTabSubscriptions.has(tabId)) activeTabSubscriptions.set(tabId, new Map()); //*
-        const tabSubs = activeTabSubscriptions.get(tabId); //*
-        if (frame.command === 'SUBSCRIBE' && frame.destination) { //*
-          const subId = frame.headers?.id || frame.headers?.['id'] || `sub-tracked-${Date.now()}`; //*
-          tabSubs.set(frame.destination, subId); //*
-        } else if (frame.command === 'UNSUBSCRIBE' && frame.destination) { //*
-          tabSubs.delete(frame.destination); //*
-        } //*
-      } //*
+      // Track SUBSCRIBE / UNSUBSCRIBE state from intercepted WS traffic
+      // This is the ground-truth source for bootstrap — independent of window.client internals
+      if (direction === 'SENT') {
+        if (!activeTabSubscriptions.has(tabId)) activeTabSubscriptions.set(tabId, new Map());
+        const tabSubs = activeTabSubscriptions.get(tabId);
+        if (frame.command === 'SUBSCRIBE' && frame.destination) {
+          const subId = frame.headers?.id || frame.headers?.['id'] || `sub-tracked-${Date.now()}`;
+          tabSubs.set(frame.destination, subId);
+        } else if (frame.command === 'UNSUBSCRIBE' && frame.destination) {
+          tabSubs.delete(frame.destination);
+        }
+      }
 
       // Notify extension popups/dashboards of live intercepted frame
       chrome.runtime.sendMessage({
@@ -133,27 +133,27 @@ async function handleMessage(message, sender) {
       };
     }
 
-    case 'GET_REPLAY_STATUS': { //*
-      return { success: true, isReplayInProgress }; //*
-    } //*
+    case 'GET_REPLAY_STATUS': {
+      return { success: true, isReplayInProgress };
+    }
 
     case 'REPLAY_SESSION': {
       const { tabId, sessionId, mode, delayMs = 500 } = message;
       if (!tabId || !sessionId) throw new Error('Tab ID and Session ID are required for replay');
 
-      if (isReplayInProgress) { //*
-        return { success: false, error: 'A replay is already in progress. Please wait for it to finish.' }; //*
-      } //*
+      if (isReplayInProgress) {
+        return { success: false, error: 'A replay is already in progress. Please wait for it to finish.' };
+      }
 
       const frames = await getSessionFrames(sessionId);
       if (!frames || frames.length === 0) {
         throw new Error('No recorded frames found in this session');
       }
 
-      isReplayInProgress = true; //*
+      isReplayInProgress = true;
       // Execute Replay Sequence (fire-and-forget, progress is reported via messages)
       executeReplaySequence(tabId, frames, mode, delayMs)
-        .finally(() => { isReplayInProgress = false; }); //*
+        .finally(() => { isReplayInProgress = false; });
       return { success: true, frameCount: frames.length };
     }
 
@@ -163,7 +163,7 @@ async function handleMessage(message, sender) {
 
       const mode = message.mode || (frame.direction === 'RECEIVED' ? 'SERVER_MOCK' : 'CLIENT');
       // Bypass mode filter for single frame replay — user explicitly chose this frame
-      const result = await executeReplaySequence(tabId, [frame], mode, 0, true); //*
+      const result = await executeReplaySequence(tabId, [frame], mode, 0, true);
       return { success: true, ...result };
     }
 
@@ -181,23 +181,23 @@ async function handleMessage(message, sender) {
  *   REPLAY_FRAME_STATUS  — after each frame is replayed
  *   REPLAY_COMPLETE      — when the entire sequence finishes
  */
-async function executeReplaySequence(tabId, frames, mode, delayMs, bypassFilter = false) { //*
+async function executeReplaySequence(tabId, frames, mode, delayMs, bypassFilter = false) {
 
-  // Unified clean log for the engineer testing the tank system
-  if (bypassFilter && frames.length === 1) { //*
-    const f = frames[0]; //*
-    console.log(`[STOMP Interceptor Replay] Replaying single frame (Command: ${f.stompCommand}, Direction: ${f.direction}, Mode: ${mode})`); //* //*
-  } else { //*
-    console.log(`[STOMP Interceptor Replay] Replaying session: ${frames.length} frames (Mode: ${mode})`); //* //*
-  } //*
+  // Log the replay operation
+  if (bypassFilter && frames.length === 1) {
+    const f = frames[0];
+    console.log(`[STOMP Interceptor Replay] Replaying single frame (Command: ${f.stompCommand}, Direction: ${f.direction}, Mode: ${mode})`);
+  } else {
+    console.log(`[STOMP Interceptor Replay] Replaying session: ${frames.length} frames (Mode: ${mode})`);
+  }
 
   // Filter frames relevant to the chosen mode.
-  // bypassFilter=true is used for single-frame replay (user explicitly selected the frame) //*
-  const replayableFrames = bypassFilter ? frames : frames.filter(f => { //*
+  // bypassFilter=true is used for single-frame replay (user explicitly selected the frame)
+  const replayableFrames = bypassFilter ? frames : frames.filter(f => {
     if (mode === 'SERVER_MOCK') return f.direction === 'RECEIVED' && f.stompCommand !== 'CONNECTED';
     if (mode === 'CLIENT') return f.direction === 'SENT' && ['SEND', 'SUBSCRIBE', 'UNSUBSCRIBE', 'CONNECT'].includes(f.stompCommand);
     return false;
-  }); //*
+  });
 
   if (replayableFrames.length === 0) {
     broadcastMessage({
@@ -214,26 +214,29 @@ async function executeReplaySequence(tabId, frames, mode, delayMs, bypassFilter 
 
   try {
 
-    // CLIENT mode: bootstrap __stompReplaySubs from background's activeTabSubscriptions map. //*
-    // This is the ground-truth source — built from intercepted WebSocket SUBSCRIBE/UNSUBSCRIBE //*
-    // frames, so it works regardless of how window.client stores subscriptions internally. //*
-    if (mode === 'CLIENT') { //*
-      const knownSubs = activeTabSubscriptions.get(tabId) || new Map(); //*
-      const knownSubsObj = Object.fromEntries(knownSubs); //*
-      console.log('[STOMP Interceptor Replay] Bootstrap: injecting', knownSubs.size, 'known subscription(s) from WS intercept:', knownSubsObj); //*
-      await chrome.scripting.executeScript({ //*
-        target: { tabId }, //*
-        world: 'MAIN', //*
-        func: (subsObj) => { //*
-          // Seed __stompReplaySubs with ground-truth data from background //*
-          window.__stompReplaySubs = subsObj; //*
-          console.log('[STOMP Interceptor Replay] Bootstrap complete. Tracked subs:', JSON.stringify(window.__stompReplaySubs)); //*
-        }, //*
-        args: [knownSubsObj] //*
-      }).catch((err) => { //*
-        console.warn('[STOMP Interceptor Replay] Bootstrap inject failed:', err); //*
-      }); //*
-    } //*
+    // CLIENT mode: bootstrap __stompReplaySubs from background's activeTabSubscriptions map.
+    // This is the ground-truth source — built from intercepted WebSocket SUBSCRIBE/UNSUBSCRIBE
+    // frames, so it works regardless of how window.client stores subscriptions internally.
+    if (mode === 'CLIENT') {
+      const knownSubs = activeTabSubscriptions.get(tabId) || new Map();
+      const knownSubsObj = Object.fromEntries(knownSubs);
+      console.log('[STOMP Interceptor Replay] Bootstrap: injecting', knownSubs.size, 'known subscription(s) from WS intercept:', knownSubsObj);
+      await chrome.scripting.executeScript({
+        target: { tabId },
+        world: 'MAIN',
+        func: (subsObj) => {
+          // Merge: page-side state wins over background data (it's more up-to-date).
+          // If __stompReplaySubs already exists (e.g. from a previous replay), keep those
+          // entries so SUBSCRIBE dedup logic still works across repeated replays.
+          window.__stompReplaySubs = Object.assign({}, subsObj, window.__stompReplaySubs || {});
+          console.log('[STOMP Interceptor Replay] Bootstrap complete. Tracked subs:', JSON.stringify(window.__stompReplaySubs));
+        },
+        args: [knownSubsObj]
+      }).catch((err) => {
+        console.warn('[STOMP Interceptor Replay] Bootstrap inject failed:', err);
+      });
+
+    }
 
     let replayedCount = 0;
     let errorCount = 0;
@@ -291,36 +294,37 @@ async function executeReplaySequence(tabId, frames, mode, delayMs, bypassFilter 
             world: 'MAIN',
             func: (command, destination, headersJson, payloadStr) => {
               if (!window.client) {
-                console.warn('[STOMP Interceptor Replay] window.client bulunamadı. Bağlantı aktif mi?');
+                console.warn('[STOMP Interceptor Replay] window.client not found. Is the connection active?');
                 return false;
               }
               const headers = JSON.parse(headersJson);
 
-              // Replay subscription state tracker //*
-              if (!window.__stompReplaySubs) window.__stompReplaySubs = {}; //*
+              // Replay subscription state tracker
+              if (!window.__stompReplaySubs) window.__stompReplaySubs = {};
 
               if (command === 'SEND') {
                 window.client.send(destination, headers, payloadStr);
               } else if (command === 'SUBSCRIBE') {
                 if (window.__stompReplaySubs[destination]) {
-                  // Already subscribed to this destination - skip //*
-                  console.log('[STOMP Interceptor Replay] SUBSCRIBE skipped (already subscribed):', destination); //*
-                  return 'SKIPPED'; //*
+                  // Already subscribed — skip to avoid ghost subs
+                  console.log('[STOMP Interceptor Replay] SUBSCRIBE skipped (already subscribed):', destination);
+                  return 'SKIPPED';
                 }
-                const sub = window.client.subscribe(destination, () => { }); //*
-                // Use sub.id if available; fall back to destination as a truthy sentinel //*
-                // (some custom STOMP clients return undefined id) //*
-                window.__stompReplaySubs[destination] = sub?.id || destination; //*
-                console.log('[STOMP Interceptor Replay] SUBSCRIBE completed:', destination, '→ id:', sub?.id ?? '(no id, using destination as key)'); //*
+                // SimpleStompClient.subscribe() returns a plain subId string
+                const subId = window.client.subscribe(destination, () => { });
+                window.__stompReplaySubs[destination] = subId || destination;
+                console.log('[STOMP Interceptor Replay] SUBSCRIBE completed:', destination, '→ id:', subId);
+
               } else if (command === 'UNSUBSCRIBE') {
                 if (!window.__stompReplaySubs || !window.__stompReplaySubs[destination]) {
-                  // Not subscribed to this destination - skip //*
-                  console.log('[STOMP Interceptor Replay] UNSUBSCRIBE skipped (not subscribed):', destination); //*
-                  return 'SKIPPED'; //*
+                  // Not subscribed to this destination - skip
+                  console.log('[STOMP Interceptor Replay] UNSUBSCRIBE skipped (not subscribed):', destination);
+                  return 'SKIPPED';
                 }
-                window.client.unsubscribe(window.__stompReplaySubs[destination]); //*
-                console.log('[STOMP Interceptor Replay] UNSUBSCRIBE completed:', destination, '→ id:', window.__stompReplaySubs[destination]); //*
-                delete window.__stompReplaySubs[destination]; //*
+                const unsubId = window.__stompReplaySubs[destination];
+                window.client.unsubscribe(unsubId);
+                console.log('[STOMP Interceptor Replay] UNSUBSCRIBE completed:', destination, '→ id:', unsubId);
+                delete window.__stompReplaySubs[destination];
               } else if (command === 'CONNECT') {
                 console.log('[STOMP Interceptor Replay] CONNECT frame skipped (already connected).');
               }
@@ -357,19 +361,16 @@ async function executeReplaySequence(tabId, frames, mode, delayMs, bypassFilter 
         }
       });
 
-      // Real-time delay: wait exactly as long as the original recording did between frames //*
-      if (i < replayableFrames.length - 1) { //*
-        const currentTimestamp = replayableFrames[i].timestamp; //*
-        const nextTimestamp = replayableFrames[i + 1].timestamp; //*
-        const timestampDelta = nextTimestamp - currentTimestamp; //*
-        // Use timestamp delta if valid, otherwise fall back to delayMs //*
+      // Real-time delay: wait exactly as long as the original recording did between frames
+      if (i < replayableFrames.length - 1) {
+        const currentTimestamp = replayableFrames[i].timestamp;
+        const nextTimestamp = replayableFrames[i + 1].timestamp;
+        const timestampDelta = nextTimestamp - currentTimestamp;
 
-        //const waitMs = (timestampDelta > 0 && timestampDelta < 60000) ? timestampDelta : delayMs; //*
-        // bunu kullanmak sitersen aşağıyı waitMS ile değiştir deltayı.
-        if (timestampDelta > 0) { //*
-          await new Promise(resolve => setTimeout(resolve, timestampDelta)); //*
-        } //*
-      } //*
+        if (timestampDelta > 0) {
+          await new Promise(resolve => setTimeout(resolve, timestampDelta));
+        }
+      }
     }
 
     // Broadcast completion
