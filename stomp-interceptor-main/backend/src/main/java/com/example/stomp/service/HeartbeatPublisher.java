@@ -36,7 +36,8 @@ public class HeartbeatPublisher {
             nowStr
         );
 
-        log.info("Broadcasting scheduled system status to /topic/system-status (tick #{})", count);
+        log.info("Broadcasting scheduled system status to /topic/systemstatus (tick #{})", count);
+        messagingTemplate.convertAndSend("/topic/systemstatus", status);
         messagingTemplate.convertAndSend("/topic/system-status", status);
     }
 }
