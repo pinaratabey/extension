@@ -7,12 +7,14 @@ interface FrameInspectorProps {
   frame: FrameRecord | null;
   onSavePayload: (frameId: number, newBody: string) => Promise<void>;
   onReplayFrame: (frame: FrameRecord) => Promise<void>;
+  onDeleteFrame?: (frameId: number) => Promise<void>;
 }
 
 export default function FrameInspector({
   frame,
   onSavePayload,
   onReplayFrame,
+  onDeleteFrame,
 }: FrameInspectorProps) {
   const [editedBody, setEditedBody] = useState(frame ? frame.body : '');
   const editorKeyRef = useRef(0);
@@ -39,6 +41,11 @@ export default function FrameInspector({
     await onReplayFrame({ ...frame, body: editedBody });
   }, [frame, editedBody, onReplayFrame]);
 
+  const handleDelete = useCallback(async () => {
+    if (!frame || frame.id === undefined || !onDeleteFrame) return;
+    await onDeleteFrame(frame.id);
+  }, [frame, onDeleteFrame]);
+
   if (!frame) {
     return (
       <div className="inspector">
@@ -54,7 +61,19 @@ export default function FrameInspector({
 
   return (
     <div className="inspector">
-      <div className="inspector-title">Frame Inspector</div>
+      <div className="inspector-title">
+        <span>Frame Inspector</span>
+        {onDeleteFrame && (
+          <button
+            className="btn btn-red"
+            style={{ padding: '0.25rem 0.55rem', fontSize: '0.72rem' }}
+            onClick={handleDelete}
+            title="Delete this single frame"
+          >
+            🗑 Delete Frame
+          </button>
+        )}
+      </div>
 
       <div id="inspectorContent">
         {/* Command & Direction */}

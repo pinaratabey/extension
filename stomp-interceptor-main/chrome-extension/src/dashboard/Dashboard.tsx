@@ -3,12 +3,15 @@ import {
   getSessions,
   getSessionFrames,
   deleteSession,
+  deleteFrame,
+  deleteFrames,
   importSessionJSON,
   updateFrame,
 } from '../lib/db';
 import SessionCard from '../components/SessionCard';
 import FrameTable from '../components/FrameTable';
 import FrameInspector from '../components/FrameInspector';
+import ToastContainer, { ToastMessage } from '../components/Toast';
 import { Session, FrameRecord, ReplayMode } from '../types';
 
 export default function Dashboard() {
@@ -21,14 +24,34 @@ export default function Dashboard() {
   const [searchFilter, setSearchFilter] = useState('');
   const [replayBtnText, setReplayBtnText] = useState('▶ Replay Selected');
   const [isReplayingSelected, setIsReplayingSelected] = useState(false);
+  const [toasts, setToasts] = useState<ToastMessage[]>([]);
 
   const importFileInputRef = useRef<HTMLInputElement>(null);
 
-  useEffect(() => {
-    loadSessions();
+  const addToast = useCallback((text: string, type: 'success' | 'error' | 'info' = 'info') => {
+    const id = Date.now() + Math.random();
+    setToasts(prev => [...prev, { id, text, type }]);
+    setTimeout(() => {
+      setToasts(prev => prev.filter(t => t.id !== id));
+    }, 4000);
   }, []);
 
-  async function loadSessions() {
+  const dismissToast = useCallback((id: number) => {
+    setToasts(prev => prev.filter(t => t.id !== id));
+  }, []);
+
+  const selectSession = useCallback(async (sessionObj: Session) => {
+    if (sessionObj.id === undefined) return;
+    setActiveSessionId(sessionObj.id);
+    setActiveSessionObj(sessionObj);
+    setSelectedFrameId(null);
+    setCheckedFrameIds(new Set());
+
+    const frames = await getSessionFrames(sessionObj.id);
+    setCurrentFrames(frames);
+  }, []);
+
+  const loadSessions = useCallback(async () => {
     const sessionList = await getSessions();
     setSessions(sessionList);
 
@@ -41,18 +64,11 @@ export default function Dashboard() {
       setSelectedFrameId(null);
       setCheckedFrameIds(new Set());
     }
-  }
+  }, [activeSessionId, selectSession]);
 
-  async function selectSession(sessionObj: Session) {
-    if (sessionObj.id === undefined) return;
-    setActiveSessionId(sessionObj.id);
-    setActiveSessionObj(sessionObj);
-    setSelectedFrameId(null);
-    setCheckedFrameIds(new Set());
-
-    const frames = await getSessionFrames(sessionObj.id);
-    setCurrentFrames(frames);
-  }
+  useEffect(() => {
+    loadSessions();
+  }, [loadSessions]);
 
   const handleFrameSelect = useCallback((frame: FrameRecord) => {
     if (frame.id !== undefined) {
@@ -119,20 +135,20 @@ export default function Dashboard() {
   const handleSavePayload = useCallback(async (frameId: number, newBody: string) => {
     try {
       await updateFrame(frameId, newBody);
-      alert('Payload saved successfully to database!');
+      addToast('Payload saved successfully to database', 'success');
       if (activeSessionId) {
         const frames = await getSessionFrames(activeSessionId);
         setCurrentFrames(frames);
       }
     } catch (err: any) {
-      alert('Failed to save payload: ' + err.message);
+      addToast('Failed to save payload: ' + err.message, 'error');
     }
-  }, [activeSessionId]);
+  }, [activeSessionId, addToast]);
 
   const handleReplayFrame = useCallback(async (updatedFrame: FrameRecord) => {
     const targetTab = await resolveTargetTab();
     if (!targetTab || !targetTab.id) {
-      alert('No suitable web page tab found.\n\nOpen the test page (e.g. http://localhost:8080) in another tab, connect to STOMP, then retry.');
+      addToast('No active target tab found. Open your application tab first.', 'error');
       return;
     }
 
@@ -146,21 +162,74 @@ export default function Dashboard() {
       });
 
       if (res && res.success) {
-        alert(`Successfully replayed ${updatedFrame.stompCommand} frame to tab: ${targetTab.url}`);
+        addToast(`Replayed ${updatedFrame.stompCommand} frame to tab`, 'success');
       } else {
-        alert('Replay failed: ' + (res ? res.error : 'Unknown error'));
+        addToast('Replay failed: ' + (res ? res.error : 'Unknown error'), 'error');
       }
     } catch (err: any) {
-      alert('Replay exception: ' + err.message);
+      addToast('Replay error: ' + err.message, 'error');
     }
-  }, [activeSessionObj]);
+  }, [activeSessionObj, addToast]);
+
+  const handleDeleteSingleFrame = useCallback(async (frameId: number) => {
+    if (!activeSessionId) return;
+    try {
+      await deleteFrame(frameId, activeSessionId);
+      addToast(`Frame #${frameId} deleted from recording`, 'info');
+      
+      const frames = await getSessionFrames(activeSessionId);
+      setCurrentFrames(frames);
+      
+      if (selectedFrameId === frameId) {
+        setSelectedFrameId(null);
+      }
+      setCheckedFrameIds(prev => {
+        const next = new Set(prev);
+        next.delete(frameId);
+        return next;
+      });
+
+      // Refresh session metadata count
+      const sessionList = await getSessions();
+      setSessions(sessionList);
+      const current = sessionList.find(s => s.id === activeSessionId);
+      if (current) setActiveSessionObj(current);
+    } catch (err: any) {
+      addToast('Failed to delete frame: ' + err.message, 'error');
+    }
+  }, [activeSessionId, selectedFrameId, addToast]);
+
+  const handleDeleteCheckedFrames = useCallback(async () => {
+    if (!activeSessionId || checkedFrameIds.size === 0) return;
+    const count = checkedFrameIds.size;
+    try {
+      await deleteFrames(Array.from(checkedFrameIds), activeSessionId);
+      addToast(`Deleted ${count} frame(s) from recording`, 'info');
+      
+      const frames = await getSessionFrames(activeSessionId);
+      setCurrentFrames(frames);
+      
+      if (selectedFrameId && checkedFrameIds.has(selectedFrameId)) {
+        setSelectedFrameId(null);
+      }
+      setCheckedFrameIds(new Set());
+
+      // Refresh session metadata count
+      const sessionList = await getSessions();
+      setSessions(sessionList);
+      const current = sessionList.find(s => s.id === activeSessionId);
+      if (current) setActiveSessionObj(current);
+    } catch (err: any) {
+      addToast('Failed to delete frames: ' + err.message, 'error');
+    }
+  }, [activeSessionId, checkedFrameIds, selectedFrameId, addToast]);
 
   const handleReplaySelected = useCallback(async () => {
     if (checkedFrameIds.size === 0) return;
 
     const targetTab = await resolveTargetTab();
     if (!targetTab || !targetTab.id) {
-      alert('No suitable web page tab found.\n\nOpen the test page in another tab, connect to STOMP, then retry.');
+      addToast('No active target tab found. Open your application tab first.', 'error');
       return;
     }
 
@@ -185,7 +254,7 @@ export default function Dashboard() {
       prevTimestamp = f.timestamp;
 
       if (delay > 0) {
-        await new Promise(resolve => setTimeout(resolve, delay));
+        await new Promise(resolve => setTimeout(resolve, Math.min(delay, 2000)));
       }
 
       const mode: ReplayMode = f.direction === 'RECEIVED' ? 'SERVER_MOCK' : 'CLIENT';
@@ -205,21 +274,22 @@ export default function Dashboard() {
 
     setReplayBtnText('▶ Replay Selected');
     setIsReplayingSelected(false);
-    alert(`Replayed ${selected.length} frame(s) with original timing.`);
-  }, [checkedFrameIds, searchFilter, currentFrames, activeSessionObj]);
+    addToast(`Replayed ${selected.length} frame(s) successfully`, 'success');
+  }, [checkedFrameIds, searchFilter, currentFrames, activeSessionObj, addToast]);
 
   const handleDeleteSession = useCallback(async () => {
     if (!activeSessionId) return;
-    if (!confirm(`Are you sure you want to delete session #${activeSessionId}?`)) return;
+    if (!window.confirm(`Are you sure you want to delete the entire session #${activeSessionId} and all its frames?`)) return;
 
     await deleteSession(activeSessionId);
+    addToast(`Session #${activeSessionId} deleted`, 'info');
     setActiveSessionId(null);
     setActiveSessionObj(null);
     setCurrentFrames([]);
     setSelectedFrameId(null);
     setCheckedFrameIds(new Set());
     await loadSessions();
-  }, [activeSessionId]);
+  }, [activeSessionId, loadSessions, addToast]);
 
   const handleImportClick = useCallback(() => {
     if (importFileInputRef.current) {
@@ -236,7 +306,7 @@ export default function Dashboard() {
       try {
         const jsonContent = evt.target?.result as string;
         const newId = await importSessionJSON(jsonContent);
-        alert(`Imported session successfully as #${newId}`);
+        addToast(`Imported session successfully as #${newId}`, 'success');
         const sessionList = await getSessions();
         setSessions(sessionList);
         const importedSession = sessionList.find(s => s.id === newId);
@@ -244,13 +314,13 @@ export default function Dashboard() {
           await selectSession(importedSession);
         }
       } catch (err: any) {
-        alert('Import failed: ' + err.message);
+        addToast('Import failed: ' + err.message, 'error');
       }
     };
     reader.readAsText(file);
 
     e.target.value = '';
-  }, []);
+  }, [selectSession, addToast]);
 
   const noSessions = sessions.length === 0;
 
@@ -263,7 +333,7 @@ export default function Dashboard() {
           <div className="sidebar-title">Recorded Sessions</div>
           <button
             className="btn btn-secondary"
-            style={{ padding: '0.3rem 0.6rem', fontSize: '0.75rem' }}
+            style={{ padding: '0.3rem 0.6rem', fontSize: '0.72rem' }}
             onClick={handleImportClick}
           >
             + Import
@@ -272,8 +342,8 @@ export default function Dashboard() {
 
         <div className="session-list">
           {noSessions ? (
-            <div style={{ color: 'var(--text-muted)', textAlign: 'center', padding: '1rem', fontSize: '0.85rem' }}>
-              No recorded sessions in Dexie DB
+            <div style={{ color: 'var(--text-muted)', textAlign: 'center', padding: '1.5rem 1rem', fontSize: '0.8rem' }}>
+              No recorded sessions in database
             </div>
           ) : (
             sessions.map(s => (
@@ -292,14 +362,14 @@ export default function Dashboard() {
       <div className="main-view">
         <div className="top-bar">
           <div>
-            <h2 style={{ fontSize: '1.1rem' }}>
+            <h2 style={{ fontSize: '0.95rem', fontWeight: 700, color: 'var(--text-main)' }}>
               {activeSessionObj
-                ? `#${activeSessionObj.id} - ${activeSessionObj.name}`
+                ? `#${activeSessionObj.id} — ${activeSessionObj.name}`
                 : (noSessions ? 'No Sessions' : 'Select a session')}
             </h2>
-            <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+            <p style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', marginTop: '0.15rem' }}>
               {activeSessionObj
-                ? `Url: ${activeSessionObj.tabUrl || 'N/A'} | Frames: ${activeSessionObj.frameCount || 0}`
+                ? `${activeSessionObj.tabUrl || 'Direct'} • ${currentFrames.length} frames`
                 : 'Inspect recorded STOMP frames'}
             </p>
           </div>
@@ -312,21 +382,39 @@ export default function Dashboard() {
               value={searchFilter}
               onChange={(e) => setSearchFilter(e.target.value)}
             />
+
+            {/* Replay Selected Frames */}
             <button
               className="btn btn-cyan"
-              style={{ padding: '0.5rem 0.8rem', fontSize: '0.8rem' }}
+              style={{ padding: '0.45rem 0.8rem', fontSize: '0.75rem' }}
               disabled={checkedFrameIds.size === 0 || isReplayingSelected}
               onClick={handleReplaySelected}
             >
               {replayBtnText}
             </button>
-            <button
-              className="btn btn-red"
-              style={{ padding: '0.5rem 0.8rem', fontSize: '0.8rem' }}
-              onClick={handleDeleteSession}
-            >
-              Delete
-            </button>
+
+            {/* Delete Selected Frames (when frames are checked) */}
+            {checkedFrameIds.size > 0 ? (
+              <button
+                className="btn btn-red"
+                style={{ padding: '0.45rem 0.8rem', fontSize: '0.75rem' }}
+                onClick={handleDeleteCheckedFrames}
+                title="Delete only the selected frames from this recording"
+              >
+                🗑 Delete Frames ({checkedFrameIds.size})
+              </button>
+            ) : (
+              /* Delete Entire Session */
+              <button
+                className="btn btn-secondary"
+                style={{ padding: '0.45rem 0.8rem', fontSize: '0.75rem', color: 'var(--accent-red)', borderColor: 'rgba(229, 83, 61, 0.4)' }}
+                disabled={!activeSessionId}
+                onClick={handleDeleteSession}
+                title="Delete entire recording session"
+              >
+                Delete Session
+              </button>
+            )}
           </div>
         </div>
 
@@ -346,6 +434,7 @@ export default function Dashboard() {
         frame={selectedFrame}
         onSavePayload={handleSavePayload}
         onReplayFrame={handleReplayFrame}
+        onDeleteFrame={handleDeleteSingleFrame}
       />
 
       {/* Hidden file input for import */}
@@ -356,6 +445,9 @@ export default function Dashboard() {
         style={{ display: 'none' }}
         onChange={handleImportFile}
       />
+
+      {/* Toast Notification Container */}
+      <ToastContainer toasts={toasts} onDismiss={dismissToast} />
     </div>
   );
 }

@@ -1,34 +1,43 @@
 # STOMP WebSocket Interceptor & Replayer — Proje Mimarisi ve Klasör Yapısı
 
-Bu doküman, **STOMP WebSocket Interceptor & Replayer** Chrome Eklentisi projesinin genel mimarisini, kullanılan teknolojileri ve klasör/dosya yapısını ayrıntılı olarak açıklamaktadır.
+Bu doküman, **STOMP WebSocket Interceptor & Replayer** Chrome Eklentisi ve entegre test ortamının genel mimarisini, kullanılan teknolojileri, güncel dosya yapısını ve bileşen işlevlerini ayrıntılı olarak açıklamaktadır.
 
 ---
 
 ## 📌 Proje Özeti ve Amacı
 
-Bu uygulama, web istemcileri (React, Angular, Vue vb.) ile sunucu (Spring Boot STOMP Broker vb.) arasında **WebSocket** protokolu üzerinden iletilen **STOMP (Simple Text Oriented Messaging Protocol)** mesajlarını yakalayan, kaydeden ve tekrar oynatan (replay) bir **Chrome Extension (Manifest V3)** uygulamasıdır.
+Bu sistem, web istemcileri (React, Angular, Vue, Vanilla JS vb.) ile sunucu (Spring Boot STOMP Broker vb.) arasında **WebSocket** üzerinden iletilen **STOMP (Simple Text Oriented Messaging Protocol)** mesajlarını yakalayan, kaydeden, inceleyen, düzenleyen ve tekrar oynatan (replay) profesyonel bir **Chrome Extension (Manifest V3)** ve beraberindeki **Canlı Radar Konsolu** test sunucusudur.
 
-### Temel Özellikler
-- **Canlı Dinleme (Intercepting)**: `chrome.debugger` API'si (DevTools Protocol) ile düşük seviyeli WebSocket paketlerini tarayıcı katmanında kesintisiz dinler.
-- **Ayrıştırma (Parsing)**: STOMP paketlerini (`CONNECT`, `SUBSCRIBE`, `SEND`, `MESSAGE`, `UNSUBSCRIBE` vb.) komut, header ve payload bölümlerine ayırır.
+### 🌟 Temel Özellikler
+- **Canlı Dinleme (Intercepting)**: `chrome.debugger` API'si (Chrome DevTools Protocol) ile düşük seviyeli WebSocket paketlerini tarayıcı katmanında kesintisiz dinler.
+- **Ayrıştırma & Doğrulama (Parsing)**: STOMP paketlerini (`CONNECT`, `SUBSCRIBE`, `SEND`, `MESSAGE`, `UNSUBSCRIBE` vb.) komut, başlıklar (headers) ve gövde (body) bölümlerine eksiksiz ayırır.
 - **IndexedDB Depolama**: Kaydedilen oturumları ve paket akışını **Dexie.js** kütüphanesi ile yerel tarayıcı veritabanında saklar.
-- **React 19 & TypeScript Arayüzü**: Pop-up menüsü ve detaylı Dashboard ekranı üzerinden verileri filtreleme, JSON payload düzenleme ve canlı paket akışını izleme imkanı sunar.
+- **Detaylı Paket & Oturum Yönetimi**:
+  - Çoklu veya tekil paket silme (`Delete Frame`),
+  - Oturum silme (`Delete Session`),
+  - JSON formatında içe/dışa aktarma (`Export/Import JSON`).
+- **Gelişmiş JSON Editörü**: Ham metin ve interaktif ağaç (Tree) görünümü arasında geçiş imkanı, anlık sözdizimi doğrulama.
 - **Çift Yönlü Replay Engine**:
-  1. **CLIENT Mode**: Kaydedilen mesajları istemci gibi sunucuya tekrar gönderir.
-  2. **SERVER_MOCK Mode**: Sunucudan gelmiş gibi mesajları doğrudan tarayıcı STOMP istemcisine enjekte eder.
+  1. **CLIENT Mode (Varsayılan)**: Kaydedilen mesajları web istemcisi gibi WebSocket üzerinden doğrudan sunucuya tekrar iletir.
+  2. **SERVER_MOCK Mode**: Sunucudan gelmiş gibi mesajları DevTools Protocol üzerinden doğrudan tarayıcı STOMP istemcisine enjekte eder.
+- **Entegre Askeri Radar Test Konsolu (`localhost:8080`)**:
+  - `/topic/signal`, `/topic/systemstatus`, `/topic/target`, `/topic/alert` kanalları.
+  - Canlı 360° döner tarama ışınlı taktik radar skopu, tam çerçeve ızgara ve çoklu hedef renklendirmesi (🟢 SIGNAL, 🟡 TARGET, 🔴 ALERT).
 
 ---
 
 ## 🛠️ Teknoloji Yığını (Tech Stack)
 
-| Bileşen | Teknoloji | Açıklama |
+| Katman | Teknoloji | Açıklama |
 | :--- | :--- | :--- |
-| **Dil** | TypeScript 5+ | Tip güvenliği ve gelişmiş geliştirici deneyimi (`strict: true`) |
-| **UI Kütüphanesi** | React 19 | Pop-up ve Dashboard arayüz bileşenleri |
-| **Paketleyici (Bundler)** | Vite 6 + `@crxjs/vite-plugin` | Manifest V3 uyumlu hızlı derleme ve modül paketleme |
+| **Uzantı Dili** | TypeScript 5+ | Tip güvenliği ve `strict: true` yapılandırması |
+| **Uzantı UI** | React 19 | Pop-up ve Dashboard modern arayüz bileşenleri |
+| **Paketleyici (Bundler)** | Vite 6 + `@crxjs/vite-plugin` | Manifest V3 uyumlu hızlı HMR ve üretim derleyicisi |
 | **Veritabanı** | Dexie.js 4+ | IndexedDB üzerinde nesne tabanlı yerel depolama |
-| **Styling** | Vanilla CSS / CSS Variables | Modern dark mode, cam efekti (glassmorphism) ve responsive tasarım |
-| **Extension APIs** | Chrome Extension Manifest V3 | `debugger`, `scripting`, `tabs`, `storage`, `activeTab` |
+| **Tipografi** | Google Fonts | `Inter` (UI) ve `JetBrains Mono` (Teknik veriler & loglar) |
+| **Tasarım / CSS** | Vanilla CSS (Variables) | Modern koyu tema (Deep Obsidian), cam efekti ve taktik renk paleti |
+| **Extension APIs** | Chrome Extension MV3 | `debugger`, `scripting`, `tabs`, `storage`, `activeTab` |
+| **Test Backend** | Spring Boot 3.4.2 (Java 17) | WebSocket & STOMP Broker, Simüle AESA Radar Yayıncısı |
 
 ---
 
@@ -36,102 +45,143 @@ Bu uygulama, web istemcileri (React, Angular, Vue vb.) ile sunucu (Spring Boot S
 
 ```
 stomp-interceptor-main/
-├── backend/                            # Test ve Doğrulama için Spring Boot Sunucusu
-│   ├── src/main/java/...               # WebSocket & STOMP Broker yapılandırması
-│   └── pom.xml                         # Maven bağımlılıkları
 │
-└── chrome-extension/                   # Chrome Eklentisi Ana Kod Tabanı
-    ├── dist/                           # Derlenmiş üretim çıktısı (Chrome'a bu klasör yüklenir)
-    │   ├── manifest.json               # Derleme sonrası Manifest V3 yapılandırması
-    │   ├── service-worker-loader.js    # Service Worker başlatıcı scripti
-    │   └── assets/                     # Derlenmiş JS, CSS ve HTML varlıkları
+├── backend/                                    # Test ve Doğrulama Spring Boot Sunucusu (localhost:8080)
+│   ├── src/main/java/com/example/stomp/
+│   │   ├── StompApplication.java               # Spring Boot Ana Başlatıcı Sınıfı
+│   │   ├── config/
+│   │   │   └── WebSocketConfig.java            # STOMP /ws Endpoint ve /topic, /app Broker Ayarları
+│   │   ├── controller/
+│   │   │   └── StompMessageController.java     # /signal, /target, /alert, /systemstatus İşleyicileri
+│   │   ├── model/
+│   │   │   └── ChatMessage.java                # Mesaj Veri Modeli
+│   │   └── service/
+│   │       └── HeartbeatPublisher.java         # /topic/systemstatus Periyodik Telemetri Yayıncısı
+│   │
+│   ├── src/main/resources/
+│   │   ├── application.properties              # Sunucu Port ve Yapılandırması (8080)
+│   │   └── static/                             # C2 Radar Konsolu Web Arayüzü
+│   │       ├── index.html                      # Konsol Arayüzü (HTML5 + 360° Radar Canvas)
+│   │       ├── css/style.css                   # Taktik Koyu Tema, Izgara Deseni ve Hover Efektleri
+│   │       └── js/
+│   │           ├── stomp-client.js             # Hafif STOMP İstemci Kütüphanesi
+│   │           └── app.js                      # Radar Çizim Motoru, Şablonlar & WebSocket Yönetimi
+│   └── pom.xml                                 # Maven Bağımlılıkları ve Yapılandırması
+│
+└── chrome-extension/                           # Chrome Eklentisi Ana Kaynak Kodları
+    ├── dist/                                   # Derlenmiş Üretim Çıktısı (Chrome'a yüklenen klasör)
+    │   ├── manifest.json                       # Derleme sonrası Manifest V3 yapılandırması
+    │   ├── service-worker-loader.js            # Background Service Worker başlatıcısı
+    │   └── assets/                             # Paketlenmiş JS, CSS ve HTML dosyaları
     │
-    ├── src/                            # Aktif TypeScript + React Kaynak Kodları
+    ├── src/                                    # TypeScript & React Kaynak Kodları
     │   ├── types/
-    │   │   └── index.ts                # Tüm STOMP, Veritabanı ve Mesajlaşma Tip Tanımları
+    │   │   └── index.ts                        # StompFrame, Session, FrameRecord ve Mesajlaşma Tipleri
     │   │
     │   ├── lib/
-    │   │   ├── stomp-parser.ts         # STOMP 1.0/1.1/1.2 Frame Ayrıştırıcı ve Seri Hale Getirici
-    │   │   └── db.ts                   # Dexie.js (IndexedDB) Veritabanı Sınıfı ve CRUD İşlemleri
+    │   │   ├── stomp-parser.ts                 # STOMP 1.0/1.1/1.2 Frame Parser & Serializer
+    │   │   └── db.ts                           # Dexie.js IndexedDB Veritabanı ve CRUD Yöneticisi
     │   │
     │   ├── background/
-    │   │   └── index.ts                # Chrome Service Worker (Debugger, Replay Engine, Event Listeners)
+    │   │   └── index.ts                        # Service Worker (chrome.debugger & Çift Yönlü Replay Engine)
     │   │
-    │   ├── components/                 # Yeniden Kullanılabilir React Bileşenleri
-    │   │   ├── DirectionTag.tsx        # SENT / RECEIVED yön etiketi badge bileşeni
-    │   │   ├── StatusPill.tsx          # Recording / Idle canlı durum göstergesi
-    │   │   ├── SessionCard.tsx         # Sidebar içerisindeki oturum kartı
-    │   │   ├── SessionDropdown.tsx     # Oturum seçim açılır menüsü
-    │   │   ├── LiveFeedFrame.tsx       # Canlı akan STOMP mesajı preview rozeti
-    │   │   ├── FrameTable.tsx          # Oturuma ait STOMP mesajları tablosu ve filtreleme
-    │   │   ├── FrameInspector.tsx      # Sağ panel: Header detayları, Raw Payload ve Replay butonları
-    │   │   ├── JsonEditor.tsx          # İnteraktif JSON Kod & Tree Editor bileşeni
-    │   │   └── JsonEditor.css          # JSON Editor stilleri
+    │   ├── components/                         # Modüler React UI Bileşenleri
+    │   │   ├── DirectionTag.tsx                # SENT / RECEIVED yön etiketi rozeti
+    │   │   ├── StatusPill.tsx                  # Recording / Idle durum göstergesi
+    │   │   ├── SessionCard.tsx                 # Oturum listesi kartı
+    │   │   ├── SessionDropdown.tsx             # Hızlı oturum seçici açılır menü
+    │   │   ├── LiveFeedFrame.tsx               # Canlı yakalanan STOMP mesajı önizleme rozeti
+    │   │   ├── FrameTable.tsx                  # Mesaj tablosu, çoklu seçim, arama ve filtreleme
+    │   │   ├── FrameInspector.tsx              # Sağ panel: Header'lar, JSON Editor, Tekil Silme & Replay
+    │   │   ├── JsonEditor.tsx                  # Kod / Ağaç Görünümlü İnteraktif JSON Editörü
+    │   │   ├── JsonEditor.css                  # JSON Editörü Stilleri
+    │   │   ├── Toast.tsx                       # Bildirim (Toast) Mesaj Bileşeni
+    │   │   └── Toast.css                       # Bildirim Stilleri
     │   │
-    │   ├── popup/                      # Eklenti Pop-up Arayüzü (Araç çubuğuna tıklayınca açılan pencere)
-    │   │   ├── index.html              # Pop-up HTML şablonu
-    │   │   ├── main.tsx                # Pop-up React giriş noktası
-    │   │   ├── Popup.tsx               # Pop-up ana arayüz bileşeni
-    │   │   └── Popup.css               # Pop-up stilleri
+    │   ├── popup/                              # Popup Arayüzü (Toolbar İkonuna Basılınca Açılır)
+    │   │   ├── index.html                      # Popup HTML Şablonu
+    │   │   ├── main.tsx                        # Popup React Başlangıç Noktası
+    │   │   ├── Popup.tsx                       # Popup Ana Kontrol Paneli
+    │   │   └── Popup.css                       # Popup Stilleri
     │   │
-    │   └── dashboard/                  # Tam Ekran Dashboard Arayüzü (Gelişmiş İnceleme & Replay)
-    │       ├── index.html              # Dashboard HTML şablonu
-    │       ├── main.tsx                # Dashboard React giriş noktası
-    │       ├── Dashboard.tsx           # Dashboard ana layout ve durum yönetimi bileşeni
-    │       └── Dashboard.css           # Dashboard stilleri
+    │   └── dashboard/                          # Tam Ekran Dashboard Arayüzü
+    │       ├── index.html                      # Dashboard HTML Şablonu
+    │       ├── main.tsx                        # Dashboard React Başlangıç Noktası
+    │       ├── Dashboard.tsx                   # Dashboard Ana Sayfası ve Oturum Yöneticisi
+    │       └── Dashboard.css                   # Dashboard Stilleri
     │
-    ├── manifest.json                   # Chrome Extension Manifest V3 Yapılandırma Dosyası
-    ├── vite.config.js                  # Vite ve CRXJS eklenti konfigürasyonu
-    ├── tsconfig.json                   # TypeScript derleyici ayarları (`strict: true`)
-    ├── package.json                    # npm paket bağımlılıkları ve npm betikleri
-    └── README.md                       # Kullanım ve kurulum rehberi
+    ├── manifest.json                           # Chrome Extension Manifest V3 Tanımı
+    ├── vite.config.js                          # Vite & CRXJS Derleyici Konfigürasyonu
+    ├── tsconfig.json                           # TypeScript Ayarları
+    ├── package.json                            # npm Paket Bağımlılıkları ve Scriptleri
+    ├── PROJECT_STRUCTURE.md                    # Proje Mimarisi ve Klasör Yapısı Dokümanı
+    └── README.md                               # Genel Tanıtım ve Kurulum Kılavuzu
 ```
 
 ---
 
-## ⚡ Modüllerin Detaylı Açıklaması
+## ⚡ Modüllerin ve Bileşenlerin Detaylı İncelemesi
 
 ### 1. `src/types/index.ts`
-Projedeki veri yapılarını tanımlayan ana TypeScript dosyasudur:
-- `StompFrame`: STOMP mesajının komut (`command`), hedef (`destination`), başlıklar (`headers`), gövde (`body`) ve ham metin (`rawPayload`) temsilcisi.
-- `Session` & `FrameRecord`: IndexedDB veritabanında saklanan oturum ve paket kayıt modelleri.
-- `ExtensionRequestMessage` & `ExtensionBroadcastEvent`: Service Worker ile React UI arasındaki `chrome.runtime.sendMessage` mesajlaşma tipleri.
+- **`StompFrame`**: `command`, `headers`, `body`, `rawPayload` ve `timestamp` içeren temel STOMP veri yapısı.
+- **`Session`**: Kaydedilen oturumun ID'si, adı, başlangıç/bitiş zamanı, sekme URL'si ve paket sayısını (`frameCount`) tutar.
+- **`FrameRecord`**: Veritabanında saklanan her bir paketin yönünü (`SENT` / `RECEIVED`), oturum ID'sini ve STOMP ayrıntılarını tanımlar.
+- **`ReplayMode`**: `'CLIENT'` (WebSockets üzerinden iletme) ve `'SERVER_MOCK'` (DevTools protokolü üzerinden enjekte etme) modları.
 
 ### 2. `src/lib/stomp-parser.ts`
-WebSocket üzerinden geçen `\u0000` (NULL byte) ile sonlanan ham string verileri analiz eder:
-- Başlık satırlarını (`destination`, `subscription`, `id`, `content-type`) nesneye dönüştürür.
-- Gövde (body) bölümünü ve kalp atışlarını (heartbeat) doğru şekilde ayırır.
+- `parseStompFrames(rawText)`: WebSocket üzerinden akan ham metni (`\u0000` NULL byte ile sonlanan) STOMP komutlarına, header satırlarına ve JSON gövdeye ayrıştırır.
+- `serializeStompFrame(frame)`: Düzenlenmiş frame nesnesini standart STOMP protokol formatında metne dönüştürür.
 
 ### 3. `src/lib/db.ts`
-Dexie.js kütüphanesini kullanarak `StompInterceptorDB` adında bir IndexedDB veritabanı yönetir:
-- `sessions` tablosu: Kayıt adı, başlama/bitiş zamanı, toplam paket sayısı ve sekme bilgilerini saklar.
-- `frames` tablosu: Her bir STOMP paketinin detaylarını, yönünü (`SENT`/`RECEIVED`) ve zaman damgasını tutar.
-- JSON dışa aktarma (`exportSessionJSON`) ve içe aktarma (`importSessionJSON`) fonksiyonlarını içerir.
+- Dexie tabanlı `StompInterceptorDB` veritabanı sınıfı:
+  - `sessions` tablosu: Oturum metaverileri.
+  - `frames` tablosu: Yakalanan tüm STOMP paketleri.
+- **CRUD Fonksiyonları**:
+  - `deleteSession(sessionId)`: Oturumu ve ona bağlı tüm frame'leri temizler.
+  - `deleteFrame(frameId, sessionId)`: Tek bir frame'i siler ve oturumun `frameCount` değerini günceller.
+  - `deleteFrames(frameIds, sessionId)`: Seçili frame'leri topluca siler.
+  - `exportSessionJSON(sessionId)` / `importSessionJSON(jsonString)`: Oturumları JSON olarak dışa aktarır ve içeri alır.
 
 ### 4. `src/background/index.ts` (Service Worker)
-Eklentinin arka planda çalışan beynidir:
-- **`chrome.debugger` API**: Hedef sekmeye bağlanarak WebSocket paketlerini anlık olarak yakalar.
-- **Replay Engine**: Kaydedilen paket sırasını orjinal zaman aralıkları ile (veya tekil olarak) sekmeye yeniden gönderir.
+- **`chrome.debugger` Dinleyicisi**: `Network.webSocketFrameReceived` ve `Network.webSocketFrameSent` olaylarını yakalar.
+- **Replay Motoru**:
+  - `CLIENT` modunda sekmede çalışan STOMP istemcisine mesaj gönderir.
+  - `SERVER_MOCK` modunda `Network.webSocketFrameReceived` taklit ederek sunucu mesajı gibi tarayıcıya iletir.
 
-### 5. `src/popup/` & `src/dashboard/`
-- **Popup (`Popup.tsx`)**: Hızlı başlat/durdur, canlı paket sayacı, son paketlerin özeti ve hızlı replay sunan küçük pencere.
-- **Dashboard (`Dashboard.tsx`)**: Tüm oturumları inceleme, filtreleme, JSON payload düzenleme ve dışa/içe aktarma imkanı sağlayan tam ekran kontrol paneli.
-
----
-
-## 🚀 Komutlar ve Çalıştırma
-
-| Komut | Açıklama |
-| :--- | :--- |
-| `npm run build` | Projeyi TypeScript ile derler ve `dist/` klasörünü oluşturur. |
-| `npm run watch` | Kod değişikliklerinde `dist/` klasörünü otomatik olarak günceller. |
-| `npx tsc --noEmit` | Herhangi bir derleme yapmadan tüm projenin TypeScript tip kontrolünü gerçekleştirir. |
+### 5. `src/components/` UI Bileşenleri
+- **`FrameTable.tsx`**: Oturumdaki paketleri tablo halinde listeler, metin araması, komut (`SEND`, `MESSAGE` vb.) ve yön (`SENT`, `RECEIVED`) filtrelemesi sunar.
+- **`FrameInspector.tsx`**: Seçilen paketin başlıklarını, gövdesini ve ham yükünü gösterir; JSON düzenleme, tekil frame silme ve tekil frame replay imkanı sağlar.
+- **`JsonEditor.tsx`**: Hem ham JSON kod editörü hem de interaktif ağaç (Tree) gezgini sunar.
+- **`Toast.tsx`**: Kullanıcıya anlık başarı, uyarı ve hata bildirimlerini zarif animasyonlarla iletir.
 
 ---
 
-## 🧩 Chrome'a Yükleme Rehberi
+## 🚀 Derleme ve Çalıştırma Komutları
 
-1. `npm run build` komutunu çalıştırın.
-2. Chrome'da `chrome://extensions` sayfasını açın.
-3. Sağ üstteki **Geliştirici modunu** aktif hale getirin.
-4. **Geliştirilmiş öğe yükle (Load unpacked)** butonuna basarak `chrome-extension/dist` klasörünü seçin.
+### Chrome Eklentisi (`chrome-extension/`)
+```powershell
+# Bağımlılıkları yükleme
+npm install
+
+# Üretim derlemesi (dist/ klasörünü oluşturur)
+npm run build
+
+# Geliştirme modu (değişiklikleri otomatik derler)
+npm run watch
+```
+
+### Test Backend Sunucusu (`backend/`)
+```powershell
+# Maven ile Spring Boot uygulamasını başlatma (localhost:8080)
+mvn spring-boot:run
+```
+
+---
+
+## 🧩 Chrome'a Yükleme Adımları
+
+1. `chrome-extension` klasöründe `npm run build` komutunu çalıştırın.
+2. Google Chrome'da `chrome://extensions` sayfasına gidin.
+3. Sağ üst köşedeki **Geliştirici modunu (Developer mode)** açın.
+4. **Paketlenmemiş öğe yükle (Load unpacked)** butonuna tıklayın.
+5. `stomp-interceptor-main/chrome-extension/dist` klasörünü seçin.

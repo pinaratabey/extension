@@ -79,6 +79,24 @@ export async function updateFrame(frameId: number, newBody: string): Promise<voi
   });
 }
 
+export async function deleteFrame(frameId: number, sessionId: number): Promise<void> {
+  if (!frameId || !sessionId) return;
+  await db.transaction('rw', db.sessions, db.frames, async () => {
+    await db.frames.delete(frameId);
+    const count = await db.frames.where('sessionId').equals(sessionId).count();
+    await db.sessions.update(sessionId, { frameCount: count });
+  });
+}
+
+export async function deleteFrames(frameIds: number[], sessionId: number): Promise<void> {
+  if (!frameIds || frameIds.length === 0 || !sessionId) return;
+  await db.transaction('rw', db.sessions, db.frames, async () => {
+    await db.frames.bulkDelete(frameIds);
+    const count = await db.frames.where('sessionId').equals(sessionId).count();
+    await db.sessions.update(sessionId, { frameCount: count });
+  });
+}
+
 export async function getSessions(): Promise<Session[]> {
   return await db.sessions.orderBy('id').reverse().toArray();
 }
