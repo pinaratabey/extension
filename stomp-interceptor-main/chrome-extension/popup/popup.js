@@ -24,6 +24,13 @@ document.addEventListener('DOMContentLoaded', async () => {
     await checkRecordingStatus();
   }
   await loadSessionsDropdown();
+
+  // Check if a replay is already running (persists even if popup was closed) //*
+  const replayStatus = await chrome.runtime.sendMessage({ type: 'GET_REPLAY_STATUS' }); //*
+  if (replayStatus && replayStatus.isReplayInProgress) { //*
+    btnReplay.disabled = true; //*
+    btnReplay.textContent = 'Replaying...'; //*
+  } //*
 });
 
 async function checkRecordingStatus() {
@@ -141,16 +148,21 @@ async function loadSessionsDropdown() {
 }
 
 // Replay Button
+let isReplaying = false; //* — kept only as local guard for double-click within same popup session
+
 btnReplay.addEventListener('click', async () => {
   const sessionId = parseInt(sessionSelect.value, 10);
   const mode = replayMode.value;
 
   if (!sessionId || !currentTabId) return;
+  if (isReplaying) return; //*
 
+  isReplaying = true; //*
   btnReplay.disabled = true;
   btnReplay.textContent = 'Replaying...';
 
   try {
+    // Fire replay — background runs it async, REPLAY_COMPLETE will signal when done //*
     const res = await chrome.runtime.sendMessage({
       type: 'REPLAY_SESSION',
       tabId: currentTabId,
@@ -159,18 +171,37 @@ btnReplay.addEventListener('click', async () => {
       delayMs: 400
     });
 
-    if (res && res.success) {
-      alert(`Successfully replayed ${res.frameCount} STOMP frames!`);
-    } else {
-      alert('Replay error: ' + (res ? res.error : 'Unknown error'));
+    if (!res || !res.success) { //*
+      // Failed before even starting (e.g. another replay is already running) — reset immediately //*
+      alert('Replay error: ' + (res ? res.error : 'Unknown error')); //*
+      isReplaying = false; //*
+      btnReplay.disabled = false; //*
+      btnReplay.textContent = '► Replay Session'; //*
     }
+    // If success: do NOT alert yet — wait for REPLAY_COMPLETE message below //*
   } catch (err) {
     alert('Replay exception: ' + err.message);
-  } finally {
+    isReplaying = false; //*
     btnReplay.disabled = false;
     btnReplay.textContent = '► Replay Session';
   }
 });
+
+// Listen to replay completion broadcast from background //*
+// This fires even if popup was closed and reopened during replay //*
+chrome.runtime.onMessage.addListener((msg) => { //*
+  if (msg.type === 'REPLAY_COMPLETE') { //*
+    isReplaying = false; //*
+    btnReplay.disabled = false; //*
+    btnReplay.textContent = '► Replay Session'; //*
+
+    if (msg.success) { //*
+      alert(`✅ Replay tamamlandı! ${msg.replayedFrames} frame başarıyla gönderildi.`); //*
+    } else { //*
+      alert(`⚠️ Replay tamamlandı ama bazı hatalar oluştu.\nBaşarılı: ${msg.replayedFrames}, Hata: ${msg.errorCount}`); //*
+    } //*
+  } //*
+}); //*
 
 // Open Dashboard Options Page
 btnOpenDashboard.addEventListener('click', () => {
