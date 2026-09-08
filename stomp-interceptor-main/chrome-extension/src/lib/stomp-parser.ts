@@ -1,6 +1,61 @@
 import { StompFrame } from '../types';
 
 /**
+ * Unwraps SockJS framing protocol from a raw WebSocket payload.
+ *
+ * SockJS frame types:
+ *   'o'        → open (connection established) — skip
+ *   'h'        → heartbeat (ping) — skip
+ *   'c[...]'   → close — skip
+ *   'a["..."]' → array of messages — unwrap and return the inner strings
+ *   plain text → passed through as-is (backward compat with direct STOMP / test backend)
+ *
+ * Returns an array of raw STOMP strings ready for parseStompFrames().
+ */
+export function unwrapSockJSPayload(data: string): string[] {
+  if (!data || typeof data !== 'string') return [];
+
+  const trimmed = data.trim();
+
+  // SockJS heartbeat or open — nothing to parse
+  if (trimmed === 'h' || trimmed === 'o') return [];
+
+  // SockJS close frame: c[code, reason]
+  if (trimmed.startsWith('c')) return [];
+
+  // SockJS server→client array frame: a["STOMP_FRAME_1", ...]  (gelen frame'ler)
+  if (trimmed.startsWith('a')) {
+    try {
+      const jsonPart = trimmed.slice(1); // remove leading 'a'
+      const arr: string[] = JSON.parse(jsonPart);
+      if (Array.isArray(arr)) {
+        return arr.filter(s => typeof s === 'string' && s.trim().length > 0);
+      }
+    } catch {
+      // Malformed SockJS frame — fall through to plain-text handling
+    }
+    return [];
+  }
+
+  // SockJS client→server array frame: ["STOMP_FRAME"] (no leading 'a')  (giden frame'ler)
+  // Sunucu a["..."] kullanırken istemci ["..."] kullanır — SockJS protokol şartnamesine göre.
+  if (trimmed.startsWith('[')) {
+    try {
+      const arr: string[] = JSON.parse(trimmed);
+      if (Array.isArray(arr)) {
+        return arr.filter(s => typeof s === 'string' && s.trim().length > 0);
+      }
+    } catch {
+      // Malformed — fall through
+    }
+    return [];
+  }
+
+  // Plain STOMP text (direct WebSocket without SockJS wrapper, e.g. test backend)
+  return [trimmed];
+}
+
+/**
  * Utility for parsing and serializing STOMP 1.0, 1.1, 1.2 protocol frames
  */
 export function parseStompFrames(rawPayload: string): StompFrame[] {

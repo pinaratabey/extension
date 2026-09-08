@@ -33,7 +33,7 @@ export interface FrameRecord {
   rawPayload: string;
 }
 
-export type ReplayMode = 'CLIENT' | 'SERVER_MOCK';
+export type ReplayMode = 'CLIENT';
 
 export interface StartRecordingMessage {
   type: 'START_RECORDING';

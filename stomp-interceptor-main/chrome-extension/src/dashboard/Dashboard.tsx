@@ -153,12 +153,11 @@ export default function Dashboard() {
     }
 
     try {
-      const mode: ReplayMode = updatedFrame.direction === 'RECEIVED' ? 'SERVER_MOCK' : 'CLIENT';
       const res = await chrome.runtime.sendMessage({
         type: 'REPLAY_SINGLE_FRAME',
         tabId: targetTab.id,
         frame: updatedFrame,
-        mode: mode
+        mode: 'CLIENT'
       });
 
       if (res && res.success) {
@@ -257,13 +256,12 @@ export default function Dashboard() {
         await new Promise(resolve => setTimeout(resolve, Math.min(delay, 2000)));
       }
 
-      const mode: ReplayMode = f.direction === 'RECEIVED' ? 'SERVER_MOCK' : 'CLIENT';
       try {
         await chrome.runtime.sendMessage({
           type: 'REPLAY_SINGLE_FRAME',
           tabId: targetTab.id,
           frame: f,
-          mode: mode
+          mode: 'CLIENT'
         });
       } catch (err) {
         console.error('Replay error for frame', f.id, err);

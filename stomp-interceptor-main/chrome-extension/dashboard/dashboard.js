@@ -252,13 +252,12 @@ btnReplaySelected.addEventListener('click', async () => {
       await new Promise(resolve => setTimeout(resolve, delay));
     }
 
-    const mode = f.direction === 'RECEIVED' ? 'SERVER_MOCK' : 'CLIENT';
     try {
       await chrome.runtime.sendMessage({
         type: 'REPLAY_SINGLE_FRAME',
         tabId: targetTab.id,
         frame: f,
-        mode: mode
+        mode: 'CLIENT'
       });
     } catch (err) {
       console.error('Replay error for frame', f.id, err);
@@ -377,12 +376,11 @@ function inspectFrame(frame) {
 
     try {
       const updatedFrame = { ...frame, body: editedBody };
-      const mode = frame.direction === 'RECEIVED' ? 'SERVER_MOCK' : 'CLIENT';
       const res = await chrome.runtime.sendMessage({
         type: 'REPLAY_SINGLE_FRAME',
         tabId: targetTab.id,
         frame: updatedFrame,
-        mode: mode
+        mode: 'CLIENT'
       });
 
       if (res && res.success) {

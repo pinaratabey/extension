@@ -185,3 +185,79 @@ mvn spring-boot:run
 3. Sağ üst köşedeki **Geliştirici modunu (Developer mode)** açın.
 4. **Paketlenmemiş öğe yükle (Load unpacked)** butonuna tıklayın.
 5. `stomp-interceptor-main/chrome-extension/dist` klasörünü seçin.
+
+---
+
+## 📝 Değişiklik Logu
+
+### 2026-09-08 — SockJS Entegrasyonu & Gerçek Sistem Uyumu
+
+#### Değiştirilen Dosyalar
+
+**`src/lib/stomp-parser.ts`**
+- **`unwrapSockJSPayload(data: string): string[]`** fonksiyonu eklendi.
+  - SockJS framing protokolünü açar: `'h'`/`'o'` (heartbeat / open) → skip; `'a[...]'` → JSON array parse edilip içindeki STOMP string'leri döndürülür; `'c[...]'` (close) → skip; düz metin → direkt geçirilir (test backend uyumluluğu).
+  - **Neden:** Gerçek sistemde STOMP mesajları SockJS taşıma katmanı tarafından `a["STOMP_FRAME"]` formatında sarmalanıyor. Önceki parser bu sarmalamayı anlayamıyor, dolayısıyla gerçek sistemden gelen frame'ler hiç kaydedilemiyordu.
+
+**`src/background/index.ts`**
+- **`Network.webSocketCreated` olayı dinlemeye alındı.**
+  - Tab başına WebSocket bağlantılarını `requestId → url` eşlemesiyle `tabWebSockets` Map'inde takip eder.
+  - `isSockJSTransportUrl(url)` yardımcı fonksiyonu ile URL'si `/websocket` ile biten bağlantılar SockJS transport olarak tanımlanır.
+  - Frame olaylarında (`webSocketFrameSent` / `webSocketFrameReceived`) yalnızca SockJS transport URL'ine sahip `requestId`'ler işlenir; diğerleri (heartbeat kanalı vb.) atlanır.
+  - **Neden:** Network sekmesinde iki WebSocket bağlantısı görünüyordu: gerçek STOMP verisini taşıyan `…/websocket` ve yalnızca `h` (ping) gönderen random sayılı kanal. Extension ikincisini dinliyordu; artık doğru kanalı dinliyor.
+
+- **SockJS unwrapping entegre edildi.**
+  - Her `payloadData` önce `unwrapSockJSPayload()` ile işlenir; sonuç dizisindeki her STOMP string ayrı ayrı `parseStompFrames()` ile parse edilir.
+  - **Neden:** `h` heartbeat frame'leri boş dizi döndürüp erken çıkış sağlar; `a[...]` frame'leri gerçek STOMP içeriğini çıkarır.
+
+- **`activeTabSubscriptions` Map'i ve tüm SUBSCRIBE/UNSUBSCRIBE takip kodu kaldırıldı.**
+  - **Neden:** Aynı topic farklı kullanıcılar tarafından dinlenebilir; duplicate koruma bu senaryoyu engelliyordu. Ayrıca sistem ayağa kalktığında zaten tüm topic'lere subscribe olunmuş halde geldiğinden ekstra takibe gerek yoktu.
+
+- **`executeReplaySequence` içindeki `__stompReplaySubs` bootstrap inject kaldırıldı.**
+  - **Neden:** Subscription tracking mekanizması kaldırıldığından bu bootstrap da gereksiz hale geldi.
+
+- **CLIENT mode replay'deki duplicate sub/unsub skip kontrolleri kaldırıldı.**
+  - `SUBSCRIBE`: Önceden `win.__stompReplaySubs[destination]` doluysa `'SKIPPED'` döndürüyordu → kaldırıldı.
+  - `UNSUBSCRIBE`: Önceden `win.__stompReplaySubs[destination]` yoksa `'SKIPPED'` döndürüyordu → kaldırıldı.
+  - `__stompReplaySubs` tüm izleme kodu temizlendi.
+  - **Neden:** Gerçek sistemde aynı topic'e birden fazla subscriber olabileceğinden bu kontroller yanlış sonuçlar üretiyordu.
+
+- **CLIENT mode replay'de `window.stompClient` fallback eklendi.**
+  - `window.client || window.stompClient` şeklinde her iki yaygın değişken adı deneniyor.
+  - **Neden:** Gerçek sistemde global STOMP client değişkeninin adı bilinmediğinden iki en yaygın isme otomatik fallback sağlandı.
+
+- **`Network.webSocketClosed` / `Network.webSocketFrameError` olayları dinleniyor.**
+  - Kapatılan/hatalı WS bağlantıları `tabWebSockets` Map'inden temizleniyor.
+  - **Neden:** Bellek sızıntısını önlemek için gereksiz kayıtlar temizlendi.
+
+- **Replay stratejisi sadeleştirildi (SERVER_MOCK kaldırıldı).**
+  - Popup arayüzünden (`Popup.tsx` ve `popup.html`) "Replay Strategy" (Server Mock vs Client) açılır menüsü tamamen kaldırıldı. Tüm replay işlemleri varsayılan olarak doğrudan websocket istemcisi (`CLIENT` modu) üzerinden yürütülecek şekilde sabitlendi.
+  - Background script (`index.ts`) ve Dashboard bileşenlerinden `SERVER_MOCK` kod mantığı temizlendi.
+  - **Neden:** Gerçek sistemde sunucu taklidi (Server Mocking) yerine doğrudan istemci üzerinden canlı websocket iletisini tekrar oynatmak esas olduğu için arayüz sadeleştirildi.
+
+- **Kayıt Esnasında Popup Re-open Durumunda Canlı Akış & Sayaç Kalıcılığı (`Popup.tsx` ve `popup.js`)**
+  - Popup açıldığında eğer arka planda devam eden bir kayıt oturumu varsa (`isRecording: true`), o ana kadar veritabanına (`IndexedDB`) yazılmış olan frame'ler `getSessionFrames(sessionId)` fonksiyonu ile çekilerek popup arayüzündeki frame sayacı ve **Intercepted Frames** canlı akış listesi dolduruluyor.
+  - **Neden:** Popup kapandığında React local state sıfırlandığı için, kayıt devam ederken eklenti simgesine tekrar tıklandığında canlı liste boş ve sayaç 0 görünüyordu. Bu durum kaydın durduğu veya çalışmadığı algısına yol açıyordu. Yapılan düzenleme ile popup her açıldığında mevcut aktif oturumun güncel akışı ve sayaç değeri anında ekrana yükleniyor.
+
+- **SockJS Client→Server Format Desteği (`stomp-parser.ts`)**
+  - `unwrapSockJSPayload()` fonksiyonuna `["STOMP_FRAME"]` formatı desteği eklendi (başında `a` harfi YOK).
+  - SockJS protokol şartnamesine göre iki yönün formatı farklıdır:
+    - **Sunucu→İstemci (Gelen):** `a["STOMP_FRAME"]` — 'a' harfi var.
+    - **İstemci→Sunucu (Giden):** `["STOMP_FRAME"]` — 'a' harfi YOK, saf JSON array.
+  - Önceden giden (SENT) frame'ler yanlışlıkla düz metin olarak işleniyordu; bu nedenle gerçek SockJS sistemiyle kullanıldığında SENT frame'ler (SEND, SUBSCRIBE vb.) hatalı parse ediliyordu. Düzeltme ile artık her iki format da doğru şekilde çözümleniyor.
+
+- **SockJS WebSocket Hook Content Script (`src/content/sockjs-hook.ts`)**
+  - `document_start` aşamasında MAIN world'de çalışan yeni bir content script oluşturuldu.
+  - `window.WebSocket` constructor'ı override edilerek URL'si `/websocket` ile biten SockJS transport bağlantısı `window.__stompInterceptorWS` değişkeninde saklanıyor.
+  - `manifest.json`'a `content_scripts` girişi eklendi.
+  - **Neden:** Kaynak koduna erişilemeyen uygulamalarda `window.client` veya `window.stompClient` gibi yüksek seviyeli STOMP istemci değişkenleri dışarı açılmamış olabilir. Hook sayesinde eklenti, ham WebSocket katmanına `document_start`'ta erişerek sayfanın kodu çalışmadan bağlantıyı yakalar.
+
+- **Replay Motoru: Doğrudan SockJS WebSocket ile Gönderim (`background/index.ts`)**
+  - `window.client.send()` yaklaşımı terk edildi.
+  - Replay yapılırken `window.__stompInterceptorWS` (hook tarafından yakalanan canlı WebSocket) kullanılıyor.
+  - Ham STOMP frame'i `JSON.stringify([rawStompFrame])` ile SockJS istemci→sunucu formatına (`["STOMP_FRAME"]`) sarmalanarak `ws.send()` ile gönderiliyor.
+  - RECEIVED yönlü frame'ler (sunucudan gelen mesajlar) replay akışında atlanıyor, kullanıcıya anlamlı hata mesajı veriliyor.
+  - **Neden:** Uygulamanın kaynak koduna erişim olmaksızın doğru SockJS formatında veri göndermek için `window.WebSocket` düzeyine inmek gerekir. Ayrıca SockJS protokol şartnamesine göre istemciden gönderilen frame'lerde başında 'a' harfi bulunmaz; `["..."]` formatı kullanılır. Eski yaklaşımda `window.client` bulunamazsa replay tamamen başarısız oluyordu.
+
+> [!NOTE]
+> **Önemli:** Sayfayı eklenti yüklendikten sonra açarsanız hook otomatik çalışır. Eklentiyi zaten açık bir sayfada etkinleştirdiyseniz, hook'un devreye girmesi için sayfayı bir kez yenilemeniz (F5) gerekir.

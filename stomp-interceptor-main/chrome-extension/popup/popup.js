@@ -1,4 +1,4 @@
-import { getSessions, exportSessionJSON } from '../db.js';
+import { getSessions, exportSessionJSON, getSessionFrames } from '../db.js';
 
 let currentTabId = null;
 let isRecording = false;
@@ -11,7 +11,6 @@ const sessionNameGroup = document.getElementById('sessionNameGroup');
 const frameCount = document.getElementById('frameCount');
 const liveFeed = document.getElementById('liveFeed');
 const sessionSelect = document.getElementById('sessionSelect');
-const replayMode = document.getElementById('replayMode');
 const btnReplay = document.getElementById('btnReplay');
 const btnOpenDashboard = document.getElementById('btnOpenDashboard');
 const btnExportJSON = document.getElementById('btnExportJSON');
@@ -39,8 +38,23 @@ async function checkRecordingStatus() {
     tabId: currentTabId
   });
 
-  if (response && response.isRecording) {
+  if (response && response.isRecording && response.sessionId) {
     setRecordingUI(true, response.sessionId);
+    const frames = await getSessionFrames(response.sessionId);
+    if (frames && frames.length > 0) {
+      frameCount.textContent = String(frames.length);
+      liveFeed.innerHTML = '';
+      const recent = frames.slice(-20).reverse();
+      for (const f of recent) {
+        const badge = document.createElement('div');
+        badge.className = `frame-badge ${f.direction.toLowerCase()}`;
+        badge.innerHTML = `
+          <span><strong>${f.direction}</strong> ${f.stompCommand}</span>
+          <span style="color:var(--text-muted);">${f.destination || ''}</span>
+        `;
+        liveFeed.appendChild(badge);
+      }
+    }
   } else {
     setRecordingUI(false, null);
   }
@@ -152,7 +166,6 @@ let isReplaying = false; // Kept only as local guard for double-click within sam
 
 btnReplay.addEventListener('click', async () => {
   const sessionId = parseInt(sessionSelect.value, 10);
-  const mode = replayMode.value;
 
   if (!sessionId || !currentTabId) return;
   if (isReplaying) return;
@@ -167,7 +180,7 @@ btnReplay.addEventListener('click', async () => {
       type: 'REPLAY_SESSION',
       tabId: currentTabId,
       sessionId: sessionId,
-      mode: mode,
+      mode: 'CLIENT',
       delayMs: 400
     });
 

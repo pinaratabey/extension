@@ -1,4 +1,4 @@
-import { parseStompFrames } from '../lib/stomp-parser';
+import { parseStompFrames, unwrapSockJSPayload } from '../lib/stomp-parser';
 import { createSession, stopSession, saveFrame, getSessionFrames } from '../lib/db';
 import {
   ExtensionRequestMessage,
@@ -20,11 +20,26 @@ const activeRecordings = new Map<number, ActiveRecording>();
 // Tracks whether a session replay is currently in progress
 let isReplayInProgress = false;
 
-// Tracks currently active STOMP subscriptions per tab, derived from intercepted WS frames
-// Map<tabId, Map<destination, subId>>
-const activeTabSubscriptions = new Map<number, Map<string, string>>();
+// Tracks WebSocket connections per tab: Map<tabId, Map<requestId, url>>
+// Used to filter only SockJS transport WebSocket connections (URLs ending with /websocket)
+const tabWebSockets = new Map<number, Map<string, string>>();
 
-// Listen to Chrome Debugger Events
+/**
+ * Returns true if the given WebSocket URL is a SockJS transport endpoint.
+ * SockJS transport URLs follow the pattern: /endpoint/{server}/{session}/websocket
+ * We also allow plain /websocket suffix to catch common configurations.
+ */
+function isSockJSTransportUrl(url: string): boolean {
+  try {
+    const pathname = new URL(url).pathname;
+    return pathname.endsWith('/websocket');
+  } catch {
+    return url.includes('/websocket');
+  }
+}
+
+// ─── Chrome Debugger Events ───────────────────────────────────────────────────
+
 chrome.debugger.onEvent.addListener(async (source: chrome.debugger.Debuggee, method: string, params: any) => {
   const tabId = source.tabId;
   if (!tabId || !activeRecordings.has(tabId)) return;
@@ -32,38 +47,62 @@ chrome.debugger.onEvent.addListener(async (source: chrome.debugger.Debuggee, met
   const recording = activeRecordings.get(tabId)!;
   const sessionId = recording.sessionId;
 
+  // Track newly created WebSocket connections
+  if (method === 'Network.webSocketCreated') {
+    const { requestId, url } = params;
+    if (!tabWebSockets.has(tabId)) tabWebSockets.set(tabId, new Map());
+    tabWebSockets.get(tabId)!.set(requestId, url || '');
+
+    if (isSockJSTransportUrl(url || '')) {
+      console.log(`[STOMP Interceptor] SockJS transport WebSocket detected: ${url} (requestId: ${requestId})`);
+    } else {
+      console.log(`[STOMP Interceptor] WebSocket opened (not SockJS transport, will be ignored): ${url}`);
+    }
+    return;
+  }
+
+  // Clean up closed/failed WebSocket connections
+  if (method === 'Network.webSocketClosed' || method === 'Network.webSocketFrameError') {
+    const { requestId } = params;
+    tabWebSockets.get(tabId)?.delete(requestId);
+    return;
+  }
+
   if (method === 'Network.webSocketFrameSent' || method === 'Network.webSocketFrameReceived') {
     const direction: FrameDirection = method === 'Network.webSocketFrameSent' ? 'SENT' : 'RECEIVED';
+    const requestId: string = params?.requestId || '';
     const payloadData: string = params?.response?.payloadData || '';
 
     if (!payloadData) return;
 
-    // Parse STOMP frames (skip raw heartbeats if needed or log them)
-    const stompFrames = parseStompFrames(payloadData);
-
-    for (const frame of stompFrames) {
-      await saveFrame(sessionId, direction, frame);
-
-      // Track SUBSCRIBE / UNSUBSCRIBE state from intercepted WS traffic
-      if (direction === 'SENT') {
-        if (!activeTabSubscriptions.has(tabId)) activeTabSubscriptions.set(tabId, new Map());
-        const tabSubs = activeTabSubscriptions.get(tabId)!;
-        if (frame.command === 'SUBSCRIBE' && frame.destination) {
-          const subId = frame.headers?.id || `sub-tracked-${Date.now()}`;
-          tabSubs.set(frame.destination, subId);
-        } else if (frame.command === 'UNSUBSCRIBE' && frame.destination) {
-          tabSubs.delete(frame.destination);
-        }
+    // Filter: only process frames from SockJS transport WebSocket connections
+    const wsMap = tabWebSockets.get(tabId);
+    if (wsMap && requestId) {
+      const wsUrl = wsMap.get(requestId);
+      // If we have URL info for this connection and it's not a SockJS transport, skip it
+      if (wsUrl !== undefined && !isSockJSTransportUrl(wsUrl)) {
+        return;
       }
+    }
 
-      // Notify extension popups/dashboards of live intercepted frame
-      broadcastMessage({
-        type: 'STOMP_FRAME_INTERCEPTED',
-        tabId,
-        sessionId,
-        direction,
-        frame
-      });
+    // Unwrap SockJS framing: 'h'/'o' → skip, 'a[...]' → extract inner STOMP strings
+    const stompPayloads = unwrapSockJSPayload(payloadData);
+
+    for (const stompPayload of stompPayloads) {
+      const stompFrames = parseStompFrames(stompPayload);
+
+      for (const frame of stompFrames) {
+        await saveFrame(sessionId, direction, frame);
+
+        // Notify extension popups/dashboards of live intercepted frame
+        broadcastMessage({
+          type: 'STOMP_FRAME_INTERCEPTED',
+          tabId,
+          sessionId,
+          direction,
+          frame
+        });
+      }
     }
   }
 });
@@ -75,6 +114,7 @@ chrome.debugger.onDetach.addListener(async (source: chrome.debugger.Debuggee, re
     const recording = activeRecordings.get(tabId)!;
     await stopSession(recording.sessionId);
     activeRecordings.delete(tabId);
+    tabWebSockets.delete(tabId);
 
     broadcastMessage({
       type: 'RECORDING_STOPPED',
@@ -83,6 +123,8 @@ chrome.debugger.onDetach.addListener(async (source: chrome.debugger.Debuggee, re
     });
   }
 });
+
+// ─── Message Handler ──────────────────────────────────────────────────────────
 
 // Communication with Popup and Dashboard UI
 chrome.runtime.onMessage.addListener((message: ExtensionRequestMessage, sender: chrome.runtime.MessageSender, sendResponse: (response?: any) => void) => {
@@ -107,7 +149,7 @@ async function handleMessage(message: ExtensionRequestMessage, sender: chrome.ru
       const tab = await chrome.tabs.get(tabId);
       const sessionId = await createSession(tab.url || '', tab.title || '', message.sessionName);
 
-      // Attach debugger protocol
+      // Attach debugger protocol and enable Network domain
       await chrome.debugger.attach({ tabId }, '1.3');
       await chrome.debugger.sendCommand({ tabId }, 'Network.enable');
 
@@ -130,6 +172,7 @@ async function handleMessage(message: ExtensionRequestMessage, sender: chrome.ru
       await chrome.debugger.detach({ tabId });
       await stopSession(recording.sessionId);
       activeRecordings.delete(tabId);
+      tabWebSockets.delete(tabId);
 
       return { success: true, isRecording: false, sessionId: recording.sessionId };
     }
@@ -172,7 +215,7 @@ async function handleMessage(message: ExtensionRequestMessage, sender: chrome.ru
       const { tabId, frame } = message;
       if (!tabId || !frame) throw new Error('Tab ID and frame object are required for replay');
 
-      const mode: ReplayMode = message.mode || (frame.direction === 'RECEIVED' ? 'SERVER_MOCK' : 'CLIENT');
+      const mode: ReplayMode = 'CLIENT';
       const result = await executeReplaySequence(tabId, [frame], mode, 0, true);
       return { success: true, ...result };
     }
@@ -182,24 +225,24 @@ async function handleMessage(message: ExtensionRequestMessage, sender: chrome.ru
   }
 }
 
+// ─── Replay Engine ────────────────────────────────────────────────────────────
+
 async function executeReplaySequence(
   tabId: number,
   frames: FrameRecord[],
-  mode: ReplayMode,
-  delayMs: number,
+  mode: ReplayMode = 'CLIENT',
+  delayMs: number = 0,
   bypassFilter = false
 ): Promise<any> {
   if (bypassFilter && frames.length === 1) {
     const f = frames[0];
-    console.log(`[STOMP Interceptor Replay] Replaying single frame (Command: ${f.stompCommand}, Direction: ${f.direction}, Mode: ${mode})`);
+    console.log(`[STOMP Interceptor Replay] Replaying single frame (Command: ${f.stompCommand}, Direction: ${f.direction})`);
   } else {
-    console.log(`[STOMP Interceptor Replay] Replaying session: ${frames.length} frames (Mode: ${mode})`);
+    console.log(`[STOMP Interceptor Replay] Replaying session: ${frames.length} frames`);
   }
 
   const replayableFrames = bypassFilter ? frames : frames.filter(f => {
-    if (mode === 'SERVER_MOCK') return f.direction === 'RECEIVED' && f.stompCommand !== 'CONNECTED';
-    if (mode === 'CLIENT') return f.direction === 'SENT' && ['SEND', 'SUBSCRIBE', 'UNSUBSCRIBE', 'CONNECT'].includes(f.stompCommand);
-    return false;
+    return f.direction === 'SENT' && ['SEND', 'SUBSCRIBE', 'UNSUBSCRIBE', 'CONNECT'].includes(f.stompCommand);
   });
 
   if (replayableFrames.length === 0) {
@@ -210,29 +253,12 @@ async function executeReplaySequence(
       totalFrames: 0,
       replayedFrames: 0,
       skippedFrames: frames.length,
-      message: `No ${mode === 'SERVER_MOCK' ? 'RECEIVED' : 'SENT'} frames to replay in this session`
+      message: 'No SENT frames to replay in this session'
     });
     return;
   }
 
   try {
-    if (mode === 'CLIENT') {
-      const knownSubs = activeTabSubscriptions.get(tabId) || new Map<string, string>();
-      const knownSubsObj = Object.fromEntries(knownSubs);
-      console.log('[STOMP Interceptor Replay] Bootstrap: injecting', knownSubs.size, 'known subscription(s) from WS intercept:', knownSubsObj);
-      await chrome.scripting.executeScript({
-        target: { tabId },
-        world: 'MAIN',
-        func: (subsObj: Record<string, string>) => {
-          (window as any).__stompReplaySubs = Object.assign({}, subsObj, (window as any).__stompReplaySubs || {});
-          console.log('[STOMP Interceptor Replay] Bootstrap complete. Tracked subs:', JSON.stringify((window as any).__stompReplaySubs));
-        },
-        args: [knownSubsObj]
-      }).catch((err) => {
-        console.warn('[STOMP Interceptor Replay] Bootstrap inject failed:', err);
-      });
-    }
-
     let replayedCount = 0;
     let errorCount = 0;
 
@@ -241,86 +267,63 @@ async function executeReplaySequence(
       let frameSuccess = false;
       let frameError: string | null = null;
 
-      if (mode === 'SERVER_MOCK') {
-        try {
-          await chrome.scripting.executeScript({
-            target: { tabId },
-            world: 'MAIN',
-            func: (rawPayload: string) => {
-              const win = window as any;
-              if (!win.client) {
-                console.error('[STOMP Interceptor Replay] ❌ window.client is null/undefined.');
-                return false;
-              }
-              if (!win.client.ws) {
-                console.error('[STOMP Interceptor Replay] ❌ window.client.ws is null.');
-                return false;
-              }
-              if (!win.client.ws.onmessage) {
-                console.error('[STOMP Interceptor Replay] ❌ window.client.ws.onmessage is not set.');
-                return false;
-              }
-              const event = new MessageEvent('message', { data: rawPayload });
-              win.client.ws.onmessage(event);
-              console.log('[STOMP Interceptor Replay] ✅ SERVER_MOCK frame injected:', rawPayload.substring(0, 80));
-              return true;
-            },
-            args: [frame.rawPayload || buildStompFrameFromRecord(frame)]
-          });
+      // Sadece SENT frame'ler replay edilir. RECEIVED frame'ler (sunucudan gelen) atlanır.
+      if (frame.direction !== 'SENT') {
+        broadcastMessage({
+          type: 'REPLAY_FRAME_STATUS',
+          tabId,
+          frameIndex: i,
+          totalFrames: replayableFrames.length,
+          success: false,
+          error: 'RECEIVED frames cannot be replayed (server-side only)',
+          frame: { stompCommand: frame.stompCommand, destination: frame.destination, direction: frame.direction }
+        });
+        continue;
+      }
+
+      try {
+        const rawFrame = frame.rawPayload || buildStompFrameFromRecord(frame);
+        const results = await chrome.scripting.executeScript({
+          target: { tabId },
+          world: 'MAIN',
+          func: (rawStompFrame: string) => {
+            const win = window as any;
+
+            // Öncelik: hook tarafından yakalanan canlı SockJS WebSocket
+            const ws: WebSocket | undefined = win.__stompInterceptorWS;
+            if (ws && ws.readyState === 1 /* OPEN */) {
+              // SockJS istemci→sunucu formatı: ["STOMP_FRAME"]  (başında 'a' YOK)
+              const payload = JSON.stringify([rawStompFrame]);
+              ws.send(payload);
+              console.log('[STOMP Interceptor Replay] ✅ Sent via SockJS WS:', rawStompFrame.substring(0, 80));
+              return { ok: true };
+            }
+
+            // Fallback: yüksek seviyeli STOMP istemcisi (window.client / window.stompClient)
+            const client = win.client || win.stompClient;
+            if (client && typeof client.send === 'function') {
+              console.warn('[STOMP Interceptor Replay] __stompInterceptorWS bulunamadı, window.client fallback deneniyor.');
+              return { ok: false, reason: 'WS hook not found. Page may need to be refreshed for the hook to capture the connection.' };
+            }
+
+            console.error('[STOMP Interceptor Replay] ❌ Aktif SockJS WebSocket bulunamadı. Sayfayı yenileyip tekrar deneyin.');
+            return { ok: false, reason: 'No active SockJS WebSocket found. Please refresh the page so the hook can capture the connection.' };
+          },
+          args: [rawFrame]
+        });
+
+        const result = results?.[0]?.result as { ok: boolean; reason?: string } | undefined;
+        if (result?.ok) {
           frameSuccess = true;
           replayedCount++;
-        } catch (err: any) {
-          frameError = err.message;
+        } else {
+          frameError = result?.reason || 'Unknown replay error';
           errorCount++;
-          console.warn(`[Replay] SERVER_MOCK frame #${i + 1} failed:`, err);
         }
-      } else if (mode === 'CLIENT') {
-        try {
-          await chrome.scripting.executeScript({
-            target: { tabId },
-            world: 'MAIN',
-            func: (command: string, destination: string, headersJson: string, payloadStr: string) => {
-              const win = window as any;
-              if (!win.client) {
-                console.warn('[STOMP Interceptor Replay] window.client not found.');
-                return false;
-              }
-              const headers = JSON.parse(headersJson);
-
-              if (!win.__stompReplaySubs) win.__stompReplaySubs = {};
-
-              if (command === 'SEND') {
-                win.client.send(destination, headers, payloadStr);
-              } else if (command === 'SUBSCRIBE') {
-                if (win.__stompReplaySubs[destination]) {
-                  return 'SKIPPED';
-                }
-                const subId = win.client.subscribe(destination, () => { });
-                win.__stompReplaySubs[destination] = subId || destination;
-              } else if (command === 'UNSUBSCRIBE') {
-                if (!win.__stompReplaySubs || !win.__stompReplaySubs[destination]) {
-                  return 'SKIPPED';
-                }
-                const unsubId = win.__stompReplaySubs[destination];
-                win.client.unsubscribe(unsubId);
-                delete win.__stompReplaySubs[destination];
-              }
-              return true;
-            },
-            args: [
-              frame.stompCommand,
-              frame.destination,
-              JSON.stringify(frame.headers || {}),
-              frame.body || ''
-            ]
-          });
-          frameSuccess = true;
-          replayedCount++;
-        } catch (err: any) {
-          frameError = err.message;
-          errorCount++;
-          console.warn(`[Replay] CLIENT frame #${i + 1} failed:`, err);
-        }
+      } catch (err: any) {
+        frameError = err.message;
+        errorCount++;
+        console.warn(`[Replay] Frame #${i + 1} failed:`, err);
       }
 
       broadcastMessage({
@@ -371,6 +374,8 @@ async function executeReplaySequence(
     });
   }
 }
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function buildStompFrameFromRecord(frame: FrameRecord): string {
   let frameStr = (frame.stompCommand || 'MESSAGE') + '\n';

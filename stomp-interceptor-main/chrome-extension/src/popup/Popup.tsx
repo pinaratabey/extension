@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { getSessions, exportSessionJSON } from '../lib/db';
+import { getSessions, exportSessionJSON, getSessionFrames } from '../lib/db';
 import StatusPill from '../components/StatusPill';
 import LiveFeedFrame from '../components/LiveFeedFrame';
 import SessionDropdown from '../components/SessionDropdown';
@@ -24,7 +24,6 @@ export default function Popup() {
   const [liveFeedFrames, setLiveFeedFrames] = useState<LiveFrameItem[]>([]);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [selectedSessionId, setSelectedSessionId] = useState('');
-  const [replayMode, setReplayMode] = useState<ReplayMode>('CLIENT');
   const [isReplaying, setIsReplaying] = useState(false);
   const [replayBtnText, setReplayBtnText] = useState('► Replay Session');
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
@@ -55,9 +54,22 @@ export default function Popup() {
           type: 'GET_RECORDING_STATUS',
           tabId: tab.id
         });
-        if (!cancelled && response && response.isRecording) {
+        if (!cancelled && response && response.isRecording && response.sessionId) {
           setIsRecording(true);
           setCurrentSessionId(response.sessionId);
+
+          // Load recorded frames for ongoing session so reopening popup restores live count & frames
+          const recordedFrames = await getSessionFrames(response.sessionId);
+          if (!cancelled && recordedFrames) {
+            setFrameCount(recordedFrames.length);
+            const recentFrames: LiveFrameItem[] = recordedFrames.slice(-MAX_LIVE_FEED_FRAMES).reverse().map((f, index) => ({
+              id: f.id || (Date.now() + index),
+              direction: f.direction,
+              command: f.stompCommand,
+              destination: f.destination
+            }));
+            setLiveFeedFrames(recentFrames);
+          }
         }
       }
 
@@ -168,7 +180,7 @@ export default function Popup() {
         type: 'REPLAY_SESSION',
         tabId: currentTabId,
         sessionId: sessionId,
-        mode: replayMode,
+        mode: 'CLIENT',
         delayMs: 400
       });
 
@@ -184,7 +196,7 @@ export default function Popup() {
       setIsReplaying(false);
       setReplayBtnText('► Replay Session');
     }
-  }, [selectedSessionId, currentTabId, replayMode, addToast]);
+  }, [selectedSessionId, currentTabId, addToast]);
 
   const handleExportJSON = useCallback(async () => {
     const sessionId = parseInt(selectedSessionId, 10);
@@ -282,17 +294,6 @@ export default function Popup() {
             value={selectedSessionId}
             onChange={setSelectedSessionId}
           />
-        </div>
-        <div className="form-group">
-          <label htmlFor="replayMode">Replay Strategy</label>
-          <select
-            id="replayMode"
-            value={replayMode}
-            onChange={e => setReplayMode(e.target.value as ReplayMode)}
-          >
-            <option value="CLIENT">Re-send Client -&gt; Server (WebSockets)</option>
-            <option value="SERVER_MOCK">Mock Server -&gt; Client (DevTools Protocol)</option>
-          </select>
         </div>
         <button
           className="btn btn-primary"
